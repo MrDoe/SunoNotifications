@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Suno Notification Collector",
+  "description": "Sammelt Suno Notifications mit Read-Bestätigung, um Datenverlust durch Zusammenlegung zu verhindern.",
+  "version": "1.9.10",
+  "permissions": [
+    "scripting",
+    "tabs",
+    "offscreen",
+    "storage"
+  ],
+  "host_permissions": [
+    "*://*.suno.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Suno Notification Collector"
+  }
+}

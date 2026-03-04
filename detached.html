@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Suno Notification Collector</title>
+  <style>
+    body { 
+      font-family: sans-serif; 
+      width: 490px; 
+      padding: 12px;
+      padding-top: 2px;
+      padding-right: 4px; 
+      margin-top: 2px;
+      margin-right: 4px; 
+    }
+    body.darkmode {
+      background-color: #101012;
+      color: #f7f4ef;
+    }
+
+    h3 { margin-top: 0; margin-block-start: 5px; margin-block-end: 5px; }
+    h4 { margin-block-end: 1px; }
+    .row { margin-bottom: 10px; }
+
+    input[type="checkbox"] {
+      top: 2px;
+      position: relative;
+    }
+
+    select, input[type="datetime-local"] {
+      width: 200px;
+      max-width: 200px;
+      box-sizing: border-box;
+    }
+    body.darkmode select, body.darkmode input[type="datetime-local"] {
+      background-color: #101012;
+      color: #f7f4ef;
+      color-scheme: dark;
+      border-color: #f7f4ef;
+      border-width: 1px;
+    }
+    body.darkmode input[type="datetime-local"] {
+      padding: 1px;
+    }
+
+    body.darkmode button {
+      background-color: #252527;
+      color: #f7f4ef;
+      border-color: #f7f4ef;
+      border-width: 1px;
+      padding-block-end: 2px;
+      padding-block-start: 2px;
+      padding-inline-end: 7px;
+      padding-inline-start 7px;
+    }
+
+    #stats {
+      font-size: 12px;
+      background-color: #f0f0f0;
+      padding: 6px;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      border: 1px solid grey;
+    }
+    body.darkmode #stats {
+      background-color: #252527;
+    }
+
+    #notifications {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 4px;
+    }
+
+    .notif {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background-color: #fafafa;
+      padding: 6px;
+      border-radius: 6px;
+      border: 1px solid #999;
+    }
+    body.darkmode .notif {
+      background-color: #151517;
+    }
+    div.checked .notif {
+      border: 2px solid #0078d4;
+      padding: 5px;
+    }
+
+    .notif img.avatar,
+    .notif img.content {
+      width: 40px;
+      height: 40px;
+      border-radius: 4px;
+      object-fit: cover;
+    }
+
+    .notif .text {
+      flex: 1;
+      font-size: 13px;
+      line-height: 1.3;
+    }
+
+    .notif .text a {
+      color: #000;
+      text-decoration: none;
+    }
+    body.darkmode .notif .text a {
+      color: #f7f4ef;
+    }
+
+    .notif .text a:hover {
+      text-decoration: underline;
+    }
+
+    .notif .time {
+      color: #444;
+      font-size: 11px;
+    }
+    body.darkmode .notif .time {
+      color: #bbb;
+    }
+  </style>
+</head>
+
+<body class="darkmode">
+  <h3>Suno Notification Collector</h3>
+  <!-- Dieses Fenster ist tab-gebunden (pro Tab eigener State) -->
+
+  <div class="row">
+    <label>
+      <input type="checkbox" id="enabled">
+      Aktiviert (nur dieser Tab)
+    </label>
+    <label style="float:right; margin-right: 30px;">
+      <input type="checkbox" id="darkmode" checked="checked">
+      Dark Mode
+    </label>
+  </div>
+
+  <div class="row">
+    <label>Intervall:
+      <select id="interval">
+        <option value="10000">10 Sekunden</option>
+        <option value="20000">20 Sekunden</option>
+        <option value="40000">40 Sekunden</option>
+        <option value="60000">1 Minute</option>
+        <option value="120000">2 Minuten (Standard)</option>
+        <option value="300000">5 Minuten</option>
+        <option value="600000">10 Minuten</option>
+        <option value="1800000">30 Minuten</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <label>
+      Startzeitpunkt:<!-- (optional, lokal):
+      <span>(wenn leer, wird beim Aktivieren automatisch gesetzt)</span><br>-->
+      <input type="datetime-local" id="initialAfterLocal">
+    </label>
+  </div>
+
+  <div class="row">
+    <button id="clear">Benachrichtigungen löschen</button>
+  </div>
+
+  <h4> Status</h4>
+  <div id="stats"></div>
+
+  <h4> Benachrichtigungen</h4>
+  <div id="notifications"></div>
+
+  <script src="detached.js"></script>
+</body>
+</html>

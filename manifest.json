@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Suno Notification Collector",
+  "version": "2.0.0",
+  "description": "Sammelt Suno Notifications zuverlässig im Hintergrund",
+  
+  "permissions": [
+    "cookies",           
+    "alarms",            
+    "scripting",         
+    "tabs",              
+    "offscreen",         
+    "storage"            
+  ],
+  
+  "host_permissions": [
+    "https://suno.com/*",      
+    "https://clerk.suno.com/*",
+    "https://api.suno.com/*"   
+  ],
+  
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  
+  "action": {
+    "default_title": "Suno Collector",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  
+  "content_scripts": [
+    {
+      "matches": ["https://suno.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,448 @@
+// background.js — Offscreen-Integration
+
+function logFormatDate(ts) {
+  const date = ts ? new Date(ts) : null;
+  if (date) {
+    const uhrzeit = date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const datum = date.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+    return datum + " " + uhrzeit + " = " + ts;
+  } else {
+    return ts;
+  }
+}
+
+function log(...args) {
+  console.log("[BACKGROUND]", ...args, "at", logFormatDate(Date.now()));
+}
+
+setInterval(() => {
+  log("heartbeat");
+}, 60000);
+
+const tabState = {};
+const DEFAULT_INTERVAL_MS = 120000;
+
+function ensureTabState(tabId) {
+  if (!tabState[tabId]) {
+    tabState[tabId] = {
+      enabled: false,
+      intervalMs: DEFAULT_INTERVAL_MS,
+      initialAfterUtc: null,
+      token: null,
+      tokenTimestamp: null,
+      requestCount: 0,
+      totalRequests: 0,
+      lastRequestTime: null,
+      reloadCount: 0,
+      lastReloadTime: null,
+      lastNotificationTime: null,
+      activatedAt: null,
+      notifications: [],
+      lastError: null
+    };
+  }
+  return tabState[tabId];
+}
+
+// -------------------------------------------------------------
+// Reload der Original-Seite alle 10 Minuten, da Edge sie sonst entfernt (Tab-Discarding)
+// und dann kein Authentication Bearer mehr erzeugt werden kann
+// -------------------------------------------------------------
+const RELOAD_INTERVAL_MS = 10 * 60 * 1000; // 10 Minuten
+const reloadTimers = {}; // tabId -> intervalId
+
+function startReloadTimer(tabId) {
+  const st = ensureTabState(tabId);
+  // Falls schon ein Timer existiert: erst stoppen
+  if (reloadTimers[tabId]) {
+    clearInterval(reloadTimers[tabId]);
+    delete reloadTimers[tabId];
+  }
+  log("RELOAD-TIMER start for tab", tabId, "every", RELOAD_INTERVAL_MS, "ms");
+  const id = setInterval(() => {
+    log("RELOAD-TIMER tick to reload tab", tabId);
+    // 1) Prüfen: Tab existiert überhaupt?
+    chrome.tabs.get(tabId, tab => {
+      if (chrome.runtime.lastError || !tab) {
+        log("RELOAD-TIMER → tab no longer exists, stopping timer for", tabId);
+        stopReloadTimer(tabId);
+        return;
+      }
+      // 2) Prüfen: Collector noch aktiv?
+      const st = tabState[tabId];
+      if (!st || !st.enabled) {
+        log("RELOAD-TIMER → collector disabled, stopping timer for", tabId);
+        stopReloadTimer(tabId);
+        return;
+      }
+      // 3) Reload ausführen
+      log("RELOAD-TIMER → reload tab", tabId);
+      st.reloadCount++;
+      st.lastReloadTime = Date.now();
+      chrome.tabs.reload(tabId, () => {
+        if (chrome.runtime.lastError) {
+          log("RELOAD-TIMER reload error for tab", tabId, ":", chrome.runtime.lastError.message);
+        } else {
+          log("RELOAD-TIMER reload completed for tab", tabId);
+        }
+      });
+    });
+  }, RELOAD_INTERVAL_MS);
+  reloadTimers[tabId] = id;
+}
+
+function stopReloadTimer(tabId) {
+  if (!reloadTimers[tabId]) return;
+  log("RELOAD-TIMER stop for tab", tabId);
+  clearInterval(reloadTimers[tabId]);
+  delete reloadTimers[tabId];
+}
+
+// -------------------------------------------------------------
+// Offscreen-Dokument sicherstellen
+// -------------------------------------------------------------
+async function ensureOffscreen() {
+  const exists = await chrome.offscreen.hasDocument();
+  if (!exists) {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["BLOBS"],
+      justification: "Suno polling"
+    });
+  }
+}
+
+// -------------------------------------------------------------
+// Token aus MAIN world holen
+// -------------------------------------------------------------
+async function fetchTokenDirect(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async () => {
+        try {
+          if (!window.Clerk) return { ok: false };
+          if (!window.Clerk.session) return { ok: false };
+          const token = await window.Clerk.session.getToken();
+          if (!token) {
+            console.log("[BACKGROUND-ASYNC]", "fetchTokenDirect ERROR: Clerk returned null (" + token + ") token at", Date.now());
+            return { ok: false };
+          } else {
+            console.log("[BACKGROUND-ASYNC]", "fetchTokenDirect NEW TOKEN created:", token.slice(0, 12), "…", "at", Date.now());
+          }
+          return { ok: true, token };
+        } catch(err) {
+          console.log("[BACKGROUND-ASYNC]", "fetchTokenDirect ERROR:", err.message, "at", Date.now());
+          return { ok: false };
+        }
+      }
+    });
+    const result = results?.[0]?.result;
+    if (!result?.ok) return null;
+    return result.token;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureValidToken(tabId) {
+  log("ensureValidToken called for tab", tabId);
+
+  const st = ensureTabState(tabId);
+  const MAX_AGE = 50 * 60 * 1000;
+
+  if (st.token && st.tokenTimestamp && Date.now() - st.tokenTimestamp < MAX_AGE) {
+    log("ensureValidToken return for tab", tabId, st.token, st.tokenTimestamp);
+    return st.token;
+  }
+
+  for (let i = 0; i < 5; i++) {
+    log("ensureValidToken for i await fetchTokenDirect for tab", tabId, i);
+    const token = await fetchTokenDirect(tabId);
+    if (!! token) {
+      log("ensureValidToken NEW TOKEN created for tab", tabId, "token:", token.slice(0, 12), "…");
+    } else {
+      log("ensureValidToken NO TOKEN returned (" + token + ") for tab", tabId);
+    }
+    if (token) {
+      st.token = token;
+      st.tokenTimestamp = Date.now();
+      return token;
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  return null;
+}
+
+// -------------------------------------------------------------
+// Nachrichten vom Offscreen
+// -------------------------------------------------------------
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "offscreenRequestToken") {
+    log("[NVO] offscreenRequestToken received for tab", msg.tabId);
+    ensureValidToken(msg.tabId).then(token => {
+      if (!token) {
+        log("[NVO] offscreenRequestToken → ensureValidToken returned NULL (" + token + ") for tab", msg.tabId);
+      } else {
+        log("[NVO] offscreenRequestToken → returning token", token.slice(0, 12), "…", "for tab", msg.tabId);
+      }
+      sendResponse({ token });
+    });
+    return true;
+  }
+
+  if (msg.type === "offscreenStateUpdate") {
+    const st = ensureTabState(msg.tabId);
+    Object.assign(st, msg.state);
+
+    chrome.runtime.sendMessage({
+      type: "stateUpdate",
+      tabId: msg.tabId,
+      state: { ...st }
+    });
+
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === "offscreenTokenExpired" || msg.type === "offscreenNoToken") {
+    log("[NVO] offscreenTokenExpired || offscreenNoToken for Tab", msg.tabId);
+    const st = ensureTabState(msg.tabId);
+    st.reloadCount++;
+    st.lastReloadTime = Date.now();
+    if (true) {
+      chrome.tabs.reload(msg.tabId, () => {
+        if (chrome.runtime.lastError) {
+          log("[NVO] reload error:", chrome.runtime.lastError.message);
+        } else {
+          log("[NVO] reload triggered for tab", msg.tabId);
+        }
+      });
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+});
+
+// -------------------------------------------------------------
+// UI → Hintergrund
+// -------------------------------------------------------------
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "uiInit") {
+    const st = ensureTabState(msg.tabId);
+    sendResponse({ state: { ...st } });
+    return true;
+  }
+
+  if (msg.type === "setConfig") {
+    const st = ensureTabState(msg.tabId);
+
+    const oldEnabled = st.enabled;
+    st.enabled = msg.enabled;
+    st.intervalMs = msg.intervalMs;
+
+    if (st.initialAfterUtc !== msg.initialAfterUtc) {
+      st.initialAfterUtc = msg.initialAfterUtc;
+      st.lastNotificationTime = null;
+      st.notifications = [];
+    }
+
+    var activated = false;
+    if (st.enabled) {
+      if (oldEnabled !== st.enabled || ! st.activatedAt) {
+        st.activatedAt = new Date().toISOString();
+        activated = true;
+        st.requestCount = 0;
+        st.totalRequests = 0;
+        // TEST START
+        if (false) {        
+          log("TEST-RELOAD triggered for tab", msg.tabId);
+          chrome.tabs.reload(msg.tabId, () => {
+            if (chrome.runtime.lastError) {
+              log("TEST-RELOAD error", chrome.runtime.lastError.message);
+            } else {
+              log("TEST-RELOAD completed for tab", msg.tabId);
+            }
+          });
+        }
+        // TEST ENDE 
+      }
+    } else {
+      st.activatedAt = null;
+    }
+
+    log("offscreenSetState for tab", msg.tabId, "enabled:", st.enabled, "intervalMs:", st.intervalMs);
+    if (st.enabled) {
+      if (activated) {
+        // Collector aktiv → 30-Minuten-Reload-Timer starten
+        startReloadTimer(msg.tabId);
+      }
+    } else {
+      // Collector deaktiv → Reload-Timer stoppen
+      stopReloadTimer(msg.tabId);
+    }
+
+    ensureOffscreen().then(() => {
+      chrome.runtime.sendMessage({
+        type: "offscreenSetState",
+        tabId: msg.tabId,
+        state: { ...st }
+      });
+    });
+
+    sendResponse({ state: { ...st } });
+    return true;
+  }
+
+  if (msg.type === "clearNotifications") {
+    const st = ensureTabState(msg.tabId);
+    st.notifications = [];
+
+    chrome.runtime.sendMessage({
+      type: "offscreenSetState",
+      tabId: msg.tabId,
+      state: { ...st }
+    });
+
+    sendResponse({ state: { ...st } });
+    return true;
+  }
+
+  if (msg.type === "offscreenKeepalivePing") {
+    // Für jeden Tab, der einen Collector laufen hat:
+    for (const [tabId, st] of Object.entries(tabState)) {
+      if (!st.enabled) continue; // Collector ist aus
+      // Keepalive in MAIN world ausführen
+      chrome.scripting.executeScript({
+        target: { tabId: Number(tabId), allFrames: false },
+        world: "MAIN",
+        func: () => {
+          // Harmloser Zugriff, der Chrome signalisiert:
+          // "Diese Seite ist aktiv"
+          window.__suno_keepalive = Date.now();
+        }
+      });
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (msg.type === "pingMainWorld") {
+    const activeTabId = Object.keys(tabState).find(id => tabState[id].enabled);
+    if (!activeTabId) {
+      log("pingMainWorld → no active tab");
+      sendResponse({ ok: false, reason: "no-active-tab" });
+      return true;
+    }
+    chrome.scripting.executeScript({
+      target: { tabId: Number(activeTabId), allFrames: false },
+      world: "MAIN",
+      func: () => {
+        window.__suno_ping = (window.__suno_ping || 0) + 1;
+        return { pong: window.__suno_ping, ts: Date.now() };
+      }
+    }, results => {
+      if (chrome.runtime.lastError) {
+        log("pingMainWorld executeScript error", chrome.runtime.lastError.message);
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      log("pingMainWorld result", results);
+      sendResponse({ ok: true, result: results });
+    });
+    return true;
+  }
+
+  if (msg.type === "offscreenTokenExpired") {
+    log("offscreenTokenExpired für Tab", msg.tabId);
+    const st = ensureTabState(msg.tabId);
+    st.reloadCount++;
+    st.lastReloadTime = Date.now();
+    log("[MSG] RELOAD triggered for tab", msg.tabId);
+    chrome.tabs.reload(msg.tabId, () => {
+      if (chrome.runtime.lastError) {
+        log("[MSG] RELOAD error", chrome.runtime.lastError.message);
+      } else {
+        log("[MSG] RELOAD completed for tab", msg.tabId);
+      }
+    });
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  // Tab-Lifecycle-Status prüfen (zeigt eingefrorene Tabs)
+  if (true) {
+    chrome.tabs.get(msg.tabId, tab => {
+      if (!! tab) {
+        log("tab status", tab.status, "discarded:", tab.discarded);
+      }
+    });
+  }
+
+});
+
+// -------------------------------------------------------------
+// Tab geschlossen → Offscreen informieren
+// -------------------------------------------------------------
+chrome.tabs.onRemoved.addListener(tabId => {
+  log("tab removed, stopping reload timer", tabId);
+  stopReloadTimer(tabId);
+  chrome.runtime.sendMessage({
+    type: "offscreenClearTab",
+    tabId
+  });
+  if (tabState[tabId]) {
+    delete tabState[tabId];
+  }
+});
+
+// -------------------------------------------------------------
+// Action → Detached-Fenster öffnen
+// -------------------------------------------------------------
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab || !tab.id) return;
+
+  const url = chrome.runtime.getURL(`detached.html?tabId=${tab.id}`);
+
+  const win = await chrome.windows.create({
+    url,
+    type: "popup",
+    width: 555,
+    height: 700
+  });
+
+  // Merken: dieses Fenster gehört zu diesem Tab
+  const st = ensureTabState(tab.id);
+  st.detachedWindowId = win.id;
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  // Prüfen, ob dieses Fenster ein Detached-Fenster war
+  for (const [tabId, st] of Object.entries(tabState)) {
+    if (st.detachedWindowId === windowId) {
+
+      // Fenster ist zu → Collector deaktivieren
+      st.enabled = false;
+      st.activatedAt = null;
+
+      // Offscreen stoppen
+      chrome.runtime.sendMessage({
+        type: "offscreenSetState",
+        tabId: Number(tabId),
+        state: { ...st }
+      });
+
+      // UI-Update (falls später wieder geöffnet)
+      chrome.runtime.sendMessage({
+        type: "stateUpdate",
+        tabId: Number(tabId),
+        state: { ...st }
+      });
+
+      // Fenster-ID löschen
+      delete st.detachedWindowId;
+    }
+  }
+});
