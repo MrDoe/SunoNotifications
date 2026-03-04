@@ -6,7 +6,7 @@ let iconCheck = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em
 function getTabIdFromUrl() {
   const params = new URLSearchParams(window.location.search)
   const id = params.get("tabId")
-  return id ? Number(id) : null
+  return id ? Number(id) : "global"
 }
 
 function localToUtcIso(localValue) {
@@ -610,11 +610,6 @@ function renderNotification(n) {
 async function init() {
   currentTabId = getTabIdFromUrl()
 
-  if (!currentTabId) {
-    document.body.innerHTML = "<p>Fehler: Keine Tab-ID übergeben.</p>"
-    return
-  }
-
   chrome.runtime.sendMessage(
     { type: "uiInit", tabId: currentTabId },
     response => {
@@ -633,6 +628,9 @@ function convertUTCDateToLocalDate(date) {
 function updateUI(state) {
   document.getElementById("enabled").checked = state.enabled;
   document.getElementById("interval").value = state.intervalMs;
+  if (state.desktopNotificationsEnabled !== undefined) {
+    document.getElementById("desktopNotifications").checked = state.desktopNotificationsEnabled;
+  }
 
   document.getElementById("initialAfterLocal").value =
     state.initialAfterUtc
@@ -750,6 +748,7 @@ function toggleCheck(key, el) {
 function sendConfig() {
   const enabled = document.getElementById("enabled").checked;
   const darkmode = document.getElementById("darkmode").checked;
+  const desktopNotifications = document.getElementById("desktopNotifications").checked;
   const intervalMs = Number(document.getElementById("interval").value);
 
   if (darkmode) {
@@ -771,12 +770,14 @@ function sendConfig() {
     tabId: currentTabId,
     enabled,
     intervalMs,
-    initialAfterUtc
+    initialAfterUtc,
+    desktopNotificationsEnabled: desktopNotifications
   }, response => updateUI(response.state))
 }
 
 document.getElementById("enabled").addEventListener("change", sendConfig);
 document.getElementById("darkmode").addEventListener("change", sendConfig);
+document.getElementById("desktopNotifications").addEventListener("change", sendConfig);
 document.getElementById("interval").addEventListener("change", sendConfig);
 document.getElementById("initialAfterLocal").addEventListener("change", sendConfig);
 

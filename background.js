@@ -39,6 +39,7 @@ function ensureTabState(tabId) {
       activatedAt: null,
       notifications: [],
       lastError: null,
+      desktopNotificationsEnabled: true,
       // NEU: Clerk Session Token
       clerkSessionToken: null,
       clerkSessionExpiry: null
@@ -48,7 +49,7 @@ function ensureTabState(tabId) {
 }
 
 // ============================================================================
-// LÖSUNG 1: Clerk Session Token aus Cookies + eigener Refresh
+// Clerk Session Token aus Cookies + eigener Refresh
 // ============================================================================
 
 /**
@@ -158,7 +159,7 @@ async function ensureValidTokenCookieBased(tabId) {
 }
 
 // ============================================================================
-// LÖSUNG 2: Tab Keep-Alive mit Chrome Alarms API
+// Tab Keep-Alive mit Chrome Alarms API
 // ============================================================================
 
 /**
@@ -177,8 +178,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // Für alle aktiven Collector: Token refreshen
     for (const [tabId, st] of Object.entries(tabState)) {
       if (st.enabled) {
-        log("⏰ Refreshing token for active collector tab", tabId);
-        await ensureValidTokenCookieBased(Number(tabId));
+        log("⏰ Refreshing token for active collector", tabId);
+        await ensureValidTokenCookieBased(tabId);
       }
     }
   }
@@ -189,6 +190,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
  * Verhindert Tab-Discarding durch minimale Interaktion
  */
 async function keepTabAlive(tabId) {
+  // Tab-independent mode: no specific Suno tab required
+  if (typeof tabId !== 'number' || isNaN(tabId)) return false;
   try {
     // Prüfen ob Tab existiert
     const tab = await chrome.tabs.get(tabId);
@@ -232,7 +235,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     
     for (const [tabId, st] of Object.entries(tabState)) {
       if (st.enabled) {
-        await keepTabAlive(Number(tabId));
+        await keepTabAlive(typeof tabId === 'string' ? Number(tabId) : tabId);
       }
     }
   }
@@ -243,6 +246,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // ============================================================================
 
 async function fetchTokenDirect(tabId) {
+  if (typeof tabId !== 'number' || isNaN(tabId)) return null;
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
@@ -359,6 +363,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const st = ensureTabState(msg.tabId);
     Object.assign(st, msg.state);
 
+    showDesktopNotifications(msg.tabId, st);
+
     chrome.runtime.sendMessage({
       type: "stateUpdate",
       tabId: msg.tabId,
@@ -374,7 +380,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     
     // WICHTIG: Kein Tab-Reload mehr nötig!
     // Token wird beim nächsten ensureValidToken() automatisch refreshed
-    const st = ensureTabState(tabId);
+    const st = ensureTabState(msg.tabId);
     st.token = null;  // Token invalidieren
     st.tokenTimestamp = null;
     
@@ -400,6 +406,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const oldEnabled = st.enabled;
     st.enabled = msg.enabled;
     st.intervalMs = msg.intervalMs;
+    if (msg.desktopNotificationsEnabled !== undefined) {
+      st.desktopNotificationsEnabled = msg.desktopNotificationsEnabled;
+    }
 
     if (st.initialAfterUtc !== msg.initialAfterUtc) {
       st.initialAfterUtc = msg.initialAfterUtc;
@@ -468,7 +477,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "pingMainWorld") {
-    const activeTabId = Object.keys(tabState).find(id => tabState[id].enabled);
+    const activeTabId = Object.keys(tabState).find(id => tabState[id].enabled && !isNaN(Number(id)));
     if (!activeTabId) {
       log("pingMainWorld → no active tab");
       sendResponse({ ok: false, reason: "no-active-tab" });
@@ -498,13 +507,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // Tab geschlossen
 // ============================================================================
 
+// Global (tab-independent) state is preserved when a Suno tab closes.
+// Only remove per-tab state slots that may still exist from legacy sessions.
 chrome.tabs.onRemoved.addListener(tabId => {
   log("tab removed", tabId);
-  chrome.runtime.sendMessage({
-    type: "offscreenClearTab",
-    tabId
-  });
   if (tabState[tabId]) {
+    chrome.runtime.sendMessage({ type: "offscreenClearTab", tabId });
     delete tabState[tabId];
   }
 });
@@ -513,10 +521,8 @@ chrome.tabs.onRemoved.addListener(tabId => {
 // Action → Detached-Fenster öffnen
 // ============================================================================
 
-chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab || !tab.id) return;
-
-  const url = chrome.runtime.getURL(`detached.html?tabId=${tab.id}`);
+chrome.action.onClicked.addListener(async () => {
+  const url = chrome.runtime.getURL('detached.html');
 
   const win = await chrome.windows.create({
     url,
@@ -525,7 +531,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     height: 700
   });
 
-  const st = ensureTabState(tab.id);
+  const st = ensureTabState("global");
   st.detachedWindowId = win.id;
 });
 
@@ -537,19 +543,138 @@ chrome.windows.onRemoved.addListener((windowId) => {
 
       chrome.runtime.sendMessage({
         type: "offscreenSetState",
-        tabId: Number(tabId),
+        tabId,
         state: { ...st }
       });
 
       chrome.runtime.sendMessage({
         type: "stateUpdate",
-        tabId: Number(tabId),
+        tabId,
         state: { ...st }
       });
 
       delete st.detachedWindowId;
     }
   }
+});
+
+// ============================================================================
+// Desktop Notifications
+// ============================================================================
+
+// Per-tab tracking: which notification keys have already triggered a desktop notification
+const desktopNotified = new Map();   // tabId → Set<key>
+const notifClickUrl   = new Map();   // chromeNotifId → url
+const lastActivatedAt = new Map();   // tabId → activatedAt string (to detect re-activation)
+
+function getNotifKey(n) {
+  return [n.type, n.content_id, n.updated_at || n.notified_at || n.created_at].join('|');
+}
+
+function buildDesktopNotifText(n) {
+  const title  = n.content_title || '';
+  const users  = n.user_profiles || [];
+  const total  = n.total_users || users.length;
+  const names  = users.map(u => u.display_name).filter(Boolean).join(', ');
+  const others = total - users.length;
+
+  let who = names;
+  if (others > 0 && names) {
+    who = `${names} and ${others} other${others > 1 ? 's' : ''}`;
+  } else if (others > 0) {
+    who = `${others} ${others > 1 ? 'people' : 'person'}`;
+  }
+
+  switch (n.type) {
+    case 'clip_like':
+      return { title: 'Suno: New Like', message: `${who} liked your song "${title}"` };
+    case 'clip_comment':
+      return { title: 'Suno: New Comment', message: `${who} commented on your song "${title}"` };
+    case 'comment_like':
+      return { title: 'Suno: Comment Liked', message: `${who} liked your comment on "${title}"` };
+    case 'comment_reply':
+      return { title: 'Suno: Comment Reply', message: `${who} replied to your comment on "${title}"` };
+    case 'video_cover_hook_like':
+      return { title: 'Suno: Hook Liked', message: `${who} liked your video cover in Hooks` };
+    case 'hook_like':
+      return { title: 'Suno: Hook Liked', message: `${who} liked your hook` };
+    default:
+      return { title: 'Suno Notification', message: `New notification from ${who || 'someone'}` };
+  }
+}
+
+function getSunoUrl(n) {
+  const id = n.content_id || '';
+  switch (n.type) {
+    case 'clip_like':
+      return `https://suno.com/song/${id}`;
+    case 'clip_comment':
+      return `https://suno.com/song/${id}`;
+    case 'comment_like':
+    case 'comment_reply':
+      return `https://suno.com/song/${id}?show_comments=true`;
+    case 'video_cover_hook_like':
+    case 'hook_like':
+      return `https://suno.com/hook/${id}`;
+    default:
+      return 'https://suno.com';
+  }
+}
+
+function showDesktopNotifications(tabId, state) {
+  if (!state.desktopNotificationsEnabled) return;
+
+  const activatedAt = state.activatedAt || null;
+
+  // When the collector is freshly activated (or re-activated), reset tracking
+  // and silently mark all existing notifications as seen to avoid spamming
+  // the user with historical notifications.
+  if (lastActivatedAt.get(tabId) !== activatedAt) {
+    lastActivatedAt.set(tabId, activatedAt);
+    const seen = new Set();
+    for (const n of (state.notifications || [])) {
+      seen.add(getNotifKey(n));
+    }
+    desktopNotified.set(tabId, seen);
+    return; // Don't notify on the first poll after activation
+  }
+
+  const seen = desktopNotified.get(tabId);
+  if (!seen) return;
+
+  for (const n of (state.notifications || [])) {
+    const key = getNotifKey(n);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    const { title, message } = buildDesktopNotifText(n);
+    const url = getSunoUrl(n);
+    const chromeNotifId = `suno_${tabId}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+    notifClickUrl.set(chromeNotifId, url);
+
+    chrome.notifications.create(chromeNotifId, {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icons/icon128.png'),
+      title,
+      message
+    });
+
+    log("🔔 Desktop notification:", title, "—", message);
+  }
+}
+
+chrome.notifications.onClicked.addListener((notifId) => {
+  const url = notifClickUrl.get(notifId);
+  if (url) {
+    chrome.tabs.create({ url });
+    notifClickUrl.delete(notifId);
+  }
+  chrome.notifications.clear(notifId);
+});
+
+chrome.notifications.onClosed.addListener((notifId) => {
+  notifClickUrl.delete(notifId);
 });
 
 // ============================================================================

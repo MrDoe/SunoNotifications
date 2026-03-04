@@ -2,6 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Suno Notification Collector</title>
   <style>
     body { 
@@ -51,7 +52,7 @@
       padding-block-end: 2px;
       padding-block-start: 2px;
       padding-inline-end: 7px;
-      padding-inline-start 7px;
+      padding-inline-start: 7px;
     }
 
     #stats {
@@ -128,16 +129,22 @@
 
 <body class="darkmode">
   <h3>Suno Notification Collector</h3>
-  <!-- Dieses Fenster ist tab-gebunden (pro Tab eigener State) -->
 
   <div class="row">
     <label>
       <input type="checkbox" id="enabled">
-      Aktiviert (nur dieser Tab)
+      Aktiviert
     </label>
     <label style="float:right; margin-right: 30px;">
       <input type="checkbox" id="darkmode" checked="checked">
       Dark Mode
+    </label>
+  </div>
+
+  <div class="row">
+    <label>
+      <input type="checkbox" id="desktopNotifications" checked="checked">
+      Desktop-Benachrichtigungen
     </label>
   </div>
 

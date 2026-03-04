@@ -38,12 +38,6 @@ setInterval(() => {
   log("heartbeat");
 }, 60000);
 
-setInterval(() => {
-  chrome.runtime.sendMessage({ type: "pingMainWorld" }, res => {
-    log("pingMainWorld → response:", res);
-  });
-}, 60000);
-
 // -------------------------------------------------------------
 // offscreen.js — dauerhaftes Polling pro Tab
 
