@@ -22,6 +22,52 @@ setInterval(() => {
 const tabState = {};
 const DEFAULT_INTERVAL_MS = 120000;
 
+// ============================================================================
+// Persistence via chrome.storage.local
+// ============================================================================
+
+// Fields that are worth saving across restarts.
+const PERSIST_FIELDS = [
+  'enabled',
+  'intervalMs',
+  'initialAfterUtc',
+  'lastNotificationTime',
+  'activatedAt',
+  'notifications',
+  'desktopNotificationsEnabled',
+];
+
+function saveState() {
+  const toSave = {};
+  for (const [key, st] of Object.entries(tabState)) {
+    toSave[key] = {};
+    for (const f of PERSIST_FIELDS) {
+      toSave[key][f] = st[f];
+    }
+  }
+  chrome.storage.local.set({ sunoState: toSave }, () => {
+    if (chrome.runtime.lastError) {
+      log('saveState error:', chrome.runtime.lastError.message);
+    }
+  });
+}
+
+async function loadState() {
+  return new Promise(resolve => {
+    chrome.storage.local.get('sunoState', result => {
+      const saved = result.sunoState || {};
+      for (const [key, fields] of Object.entries(saved)) {
+        const st = ensureTabState(key);
+        for (const f of PERSIST_FIELDS) {
+          if (fields[f] !== undefined) st[f] = fields[f];
+        }
+        log('loadState: restored', (fields.notifications || []).length, 'notifications for', key);
+      }
+      resolve();
+    });
+  });
+}
+
 function ensureTabState(tabId) {
   if (!tabState[tabId]) {
     tabState[tabId] = {
@@ -364,6 +410,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     Object.assign(st, msg.state);
 
     showDesktopNotifications(msg.tabId, st);
+    saveState();
 
     chrome.runtime.sendMessage({
       type: "stateUpdate",
@@ -438,6 +485,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       log("Collector deaktiviert für Tab", msg.tabId);
     }
 
+    saveState();
+
     ensureOffscreen().then(() => {
       chrome.runtime.sendMessage({
         type: "offscreenSetState",
@@ -453,6 +502,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "clearNotifications") {
     const st = ensureTabState(msg.tabId);
     st.notifications = [];
+
+    saveState();
 
     chrome.runtime.sendMessage({
       type: "offscreenSetState",
@@ -540,6 +591,8 @@ chrome.windows.onRemoved.addListener((windowId) => {
     if (st.detachedWindowId === windowId) {
       st.enabled = false;
       st.activatedAt = null;
+
+      saveState();
 
       chrome.runtime.sendMessage({
         type: "offscreenSetState",
@@ -684,3 +737,18 @@ chrome.notifications.onClosed.addListener((notifId) => {
 log("🚀 Background Service Worker gestartet");
 log("Token-Refresh via Clerk API alle 45 Minuten");
 log("Tab Keep-Alive alle 5 Minuten");
+
+// Restore persisted state, then restart polling for any state that was enabled.
+loadState().then(() => {
+  const globalSt = tabState['global'];
+  if (globalSt?.enabled) {
+    log('loadState: restarting polling for global (was enabled at last save)');
+    ensureOffscreen().then(() => {
+      chrome.runtime.sendMessage({
+        type: "offscreenSetState",
+        tabId: 'global',
+        state: { ...globalSt }
+      });
+    });
+  }
+});
