@@ -1,0 +1,707 @@
+/* Suno Notification Collector — floating panel injected into suno.com */
+
+#suno-notif-root {
+  --suno-bg: #18181b;
+  --suno-bg-hover: #27272a;
+  --suno-border: #3f3f46;
+  --suno-text: #f4f4f5;
+  --suno-text-muted: #a1a1aa;
+  --suno-accent: #8b5cf6;
+  --suno-accent-hover: #7c3aed;
+
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  font-size: 14px !important;
+  line-height: 1.4 !important;
+  color: var(--suno-text) !important;
+  position: fixed !important;
+  bottom: 20px !important;
+  right: 20px !important;
+  z-index: 9999999999 !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  min-width: auto !important;
+  overflow: visible !important;
+  clip: auto !important;
+  clip-path: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+
+/* ---- Bell button ---- */
+#suno-notif-bell {
+  width: 48px !important;
+  height: 48px !important;
+  border-radius: 50% !important;
+  background: var(--suno-accent) !important;
+  border: none !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+  transition: background 0.15s, transform 0.15s !important;
+  position: relative !important;
+  pointer-events: auto !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  z-index: 999999999 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+#suno-notif-bell:hover {
+  background: var(--suno-accent-hover) !important;
+  transform: scale(1.08) !important;
+}
+
+#suno-notif-bell svg {
+  width: 24px !important;
+  height: 24px !important;
+  fill: #fff !important;
+  pointer-events: none !important;
+}
+
+#suno-notif-badge {
+  position: absolute !important;
+  top: -4px !important;
+  right: -4px !important;
+  background: #ef4444 !important;
+  color: #fff !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  min-width: 20px !important;
+  height: 20px !important;
+  border-radius: 10px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 5px !important;
+  box-sizing: border-box !important;
+  display: none !important; /* hidden when 0 */
+  pointer-events: none !important;
+}
+
+/* ---- Panel ---- */
+#suno-notif-panel {
+  display: none !important;
+  position: absolute !important;
+  bottom: 60px !important;
+  right: 0 !important;
+  width: 380px !important;
+  max-height: 640px !important;
+  background: var(--suno-bg) !important;
+  border: 1px solid var(--suno-border) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+  overflow: hidden !important;
+  flex-direction: column !important;
+  pointer-events: auto !important;
+  z-index: 999999999 !important;
+}
+
+#suno-notif-panel.open {
+  display: flex !important;
+}
+
+/* Header */
+#suno-notif-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 12px 16px !important;
+  border-bottom: 1px solid var(--suno-border) !important;
+  flex-shrink: 0 !important;
+}
+
+#suno-notif-header h3 {
+  margin: 0 !important;
+  font-size: 15px !important;
+  font-weight: 600 !important;
+}
+
+#suno-notif-header .suno-notif-status {
+  font-size: 11px !important;
+  color: var(--suno-text-muted) !important;
+}
+
+#suno-notif-header .suno-notif-status.active {
+  color: #22c55e !important;
+}
+
+/* List */
+#suno-notif-list {
+  overflow-y: auto !important;
+  flex: 1 !important;
+  padding: 4px 0 !important;
+  pointer-events: auto !important;
+}
+
+#suno-notif-list::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+#suno-notif-list::-webkit-scrollbar-thumb {
+  background: var(--suno-border) !important;
+  border-radius: 3px !important;
+}
+
+.suno-notif-empty {
+  padding: 24px 16px !important;
+  text-align: center !important;
+  color: var(--suno-text-muted) !important;
+  font-size: 13px !important;
+}
+
+/* Individual notification row */
+.suno-notif-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 10px 16px !important;
+  transition: background 0.1s !important;
+  cursor: default !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-item:hover {
+  background: var(--suno-bg-hover) !important;
+}
+
+.suno-notif-item img.suno-notif-avatar {
+  width: 36px !important;
+  height: 36px !important;
+  border-radius: 50% !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-item img.suno-notif-content-img {
+  width: 40px !important;
+  height: 40px !important;
+  border-radius: 6px !important;
+  object-fit: cover !important;
+  flex-shrink: 0 !important;
+  margin-left: auto !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-item .suno-notif-body {
+  flex: 1 !important;
+  min-width: 0 !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-item .suno-notif-body a {
+  color: var(--suno-accent) !important;
+  text-decoration: none !important;
+  font-weight: 600 !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-item .suno-notif-body a:hover {
+  text-decoration: underline !important;
+}
+
+.suno-notif-item .suno-notif-text {
+  font-size: 13px !important;
+  color: var(--suno-text) !important;
+}
+
+.suno-notif-item .suno-notif-time {
+  font-size: 11px !important;
+  color: var(--suno-text-muted) !important;
+  margin-top: 2px !important;
+}
+
+/* Footer */
+#suno-notif-footer {
+  display: flex !important;
+  border-top: 1px solid var(--suno-border) !important;
+  flex-shrink: 0 !important;
+}
+
+#suno-notif-footer button {
+  flex: 1 !important;
+  padding: 10px !important;
+  background: none !important;
+  border: none !important;
+  color: var(--suno-text-muted) !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  transition: background 0.1s, color 0.1s !important;
+  pointer-events: auto !important;
+}
+
+#suno-notif-footer button:hover {
+  background: var(--suno-bg-hover) !important;
+  color: var(--suno-text) !important;
+}
+
+#suno-notif-footer button + button {
+  border-left: 1px solid var(--suno-border) !important;
+}
+
+/* ---- Tabs ---- */
+#suno-notif-tabs {
+  display: flex !important;
+  border-bottom: 1px solid var(--suno-border) !important;
+  flex-shrink: 0 !important;
+  background: transparent !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.suno-notif-tab {
+  flex: 1 !important;
+  padding: 10px !important;
+  background: transparent !important;
+  border: none !important;
+  color: var(--suno-text-muted) !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  transition: color 0.1s, background 0.1s !important;
+  font-weight: 500 !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-tab:hover {
+  background: var(--suno-bg-hover) !important;
+  color: var(--suno-text) !important;
+}
+
+.suno-notif-tab.active {
+  color: var(--suno-accent) !important;
+  border-bottom: 2px solid var(--suno-accent) !important;
+  margin-bottom: -1px !important;
+}
+
+.suno-notif-tab + .suno-notif-tab {
+  border-left: 1px solid var(--suno-border) !important;
+}
+
+/* ---- Settings Content ---- */
+.suno-notif-content {
+  overflow-y: auto !important;
+  flex: 1 !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-content::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+.suno-notif-content::-webkit-scrollbar-thumb {
+  background: var(--suno-border) !important;
+  border-radius: 3px !important;
+}
+
+#suno-notif-settings-content {
+  padding: 12px !important;
+}
+
+.suno-notif-settings-form {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-setting-row {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 4px !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-setting-row label {
+  font-size: 12px !important;
+  color: var(--suno-text-muted) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+
+.suno-notif-setting-row label input[type="checkbox"] {
+  cursor: pointer !important;
+  accent-color: var(--suno-accent) !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-setting-row input[type="number"],
+.suno-notif-setting-row input[type="datetime-local"] {
+  padding: 6px !important;
+  background: var(--suno-bg-hover) !important;
+  border: 1px solid var(--suno-border) !important;
+  border-radius: 4px !important;
+  color: var(--suno-text) !important;
+  font-size: 12px !important;
+  font-family: inherit !important;
+  box-sizing: border-box !important;
+  pointer-events: auto !important;
+}
+
+.suno-notif-setting-row input[type="number"]:focus,
+.suno-notif-setting-row input[type="datetime-local"]:focus {
+  outline: none !important;
+  border-color: var(--suno-accent) !important;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2) !important;
+}
+
+
+/* ========== Downloader (popup.html) embedded in Library tab ========== */
+
+#suno-downloader-wrapper {
+  color: #333 !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", sans-serif !important;
+  font-size: 13px !important;
+  padding: 0 !important;
+}
+
+#suno-downloader-wrapper .note {
+  font-size: 12px !important;
+  color: #666 !important;
+  margin-bottom: 14px !important;
+  line-height: 1.4 !important;
+  background: #f0f3ff !important;
+  padding: 10px 12px !important;
+  border-radius: 6px !important;
+  border-left: 3px solid #667eea !important;
+}
+
+#suno-downloader-wrapper .form-group {
+  margin-bottom: 14px !important;
+}
+
+#suno-downloader-wrapper .form-group label {
+  display: block !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #555 !important;
+  margin-bottom: 6px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.3px !important;
+}
+
+#suno-downloader-wrapper input[type="text"],
+#suno-downloader-wrapper input[type="number"] {
+  width: 100% !important;
+  padding: 8px !important;
+  border: 1px solid #ddd !important;
+  border-radius: 3px !important;
+  font-size: 12px !important;
+  font-family: inherit !important;
+  box-sizing: border-box !important;
+  background: #fff !important;
+  color: #333 !important;
+}
+
+#suno-downloader-wrapper input[type="text"]:focus,
+#suno-downloader-wrapper input[type="number"]:focus {
+  outline: none !important;
+  border-color: #667eea !important;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
+}
+
+#suno-downloader-wrapper input[type="checkbox"] {
+  cursor: pointer !important;
+  width: 16px !important;
+  height: 16px !important;
+  accent-color: #667eea !important;
+}
+
+#suno-downloader-wrapper .checkbox-label {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  cursor: pointer !important;
+  padding: 8px 0 !important;
+  font-size: 13px !important;
+  color: #333 !important;
+}
+
+#suno-downloader-wrapper button {
+  padding: 10px 14px !important;
+  cursor: pointer !important;
+  border: none !important;
+  font-weight: 600 !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  letter-spacing: 0.3px !important;
+  font-family: inherit !important;
+}
+
+#suno-downloader-wrapper button:disabled {
+  opacity: 0.5 !important;
+  cursor: not-allowed !important;
+}
+
+#suno-downloader-wrapper .btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+  color: white !important;
+}
+
+#suno-downloader-wrapper .btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 12px rgba(102, 126, 234, 0.3) !important;
+}
+
+#suno-downloader-wrapper .btn-stop {
+  background: #ef5350 !important;
+  color: white !important;
+}
+
+#suno-downloader-wrapper .btn-stop:hover:not(:disabled) {
+  background: #e53935 !important;
+}
+
+#suno-downloader-wrapper .btn-success {
+  background: linear-gradient(135deg, #26c281 0%, #2ecc71 100%) !important;
+  color: white !important;
+  width: 100% !important;
+  margin-top: 8px !important;
+}
+
+#suno-downloader-wrapper .btn-success:hover:not(:disabled) {
+  transform: translateY(-1px) !important;
+  box-shadow: 0 6px 12px rgba(38, 194, 129, 0.3) !important;
+}
+
+#suno-downloader-wrapper .btn-secondary {
+  background: #f5f5f5 !important;
+  color: #333 !important;
+  border: 1px solid #ddd !important;
+}
+
+#suno-downloader-wrapper .btn-secondary:hover:not(:disabled) {
+  background: #efefef !important;
+}
+
+#suno-downloader-wrapper .btn-row {
+  display: flex !important;
+  gap: 10px !important;
+  margin-top: 12px !important;
+}
+
+#suno-downloader-wrapper .btn-row button {
+  flex: 1 !important;
+}
+
+#suno-downloader-wrapper .hidden {
+  display: none !important;
+}
+
+#suno-downloader-wrapper #settingsPanel,
+#suno-downloader-wrapper #songListContainer {
+  background: #18181b !important;
+  padding: 12px !important;
+  border-radius: 0 !important;
+}
+
+#suno-downloader-wrapper #status {
+  margin-top: 10px !important;
+  font-size: 11px !important;
+  height: 80px !important;
+  overflow-y: auto !important;
+  border: 1px solid #3f3f46 !important;
+  border-radius: 6px !important;
+  padding: 8px 10px !important;
+  background: #111113 !important;
+  line-height: 1.5 !important;
+  color: #a1a1aa !important;
+  font-family: monospace !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  margin-left: 12px !important;
+  margin-right: 12px !important;
+  margin-bottom: 4px !important;
+  box-sizing: border-box !important;
+}
+
+#suno-downloader-wrapper .version-footer {
+  font-size: 10px !important;
+  color: #a1a1aa !important;
+  text-align: center !important;
+  padding: 4px 10px 8px !important;
+  user-select: none !important;
+}
+
+#suno-downloader-wrapper #filterInput {
+  width: 100% !important;
+  padding: 8px 10px !important;
+  margin-bottom: 4px !important;
+  border: 1px solid #3f3f46 !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  background: #27272a !important;
+  color: #f4f4f5 !important;
+  font-family: inherit !important;
+  box-sizing: border-box !important;
+}
+
+#suno-downloader-wrapper #filterInput:focus {
+  outline: none !important;
+  border-color: #667eea !important;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
+}
+
+#suno-downloader-wrapper #songList {
+  max-height: 220px !important;
+  overflow-y: auto !important;
+  border: 1px solid #3f3f46 !important;
+  border-radius: 6px !important;
+  background: #111113 !important;
+  margin-bottom: 10px !important;
+}
+
+#suno-downloader-wrapper #songList::-webkit-scrollbar {
+  width: 6px !important;
+}
+
+#suno-downloader-wrapper #songList::-webkit-scrollbar-thumb {
+  background: #3f3f46 !important;
+  border-radius: 3px !important;
+}
+
+#suno-downloader-wrapper .song-item {
+  display: flex !important;
+  align-items: center !important;
+  padding: 9px 10px !important;
+  border-bottom: 1px solid #27272a !important;
+  font-size: 12px !important;
+  transition: background 0.15s !important;
+  color: #f4f4f5 !important;
+}
+
+#suno-downloader-wrapper .song-item:last-child {
+  border-bottom: none !important;
+}
+
+#suno-downloader-wrapper .song-item:hover {
+  background: #27272a !important;
+}
+
+#suno-downloader-wrapper .song-item input[type="checkbox"] {
+  margin-right: 8px !important;
+  flex-shrink: 0 !important;
+}
+
+#suno-downloader-wrapper .song-info {
+  flex: 1 !important;
+  overflow: hidden !important;
+}
+
+#suno-downloader-wrapper .song-title {
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  color: #f4f4f5 !important;
+  margin-bottom: 2px !important;
+}
+
+#suno-downloader-wrapper .song-meta {
+  color: #a1a1aa !important;
+  font-size: 10px !important;
+  display: flex !important;
+  gap: 8px !important;
+  align-items: center !important;
+}
+
+#suno-downloader-wrapper .song-meta .public {
+  color: #22c55e !important;
+  font-weight: 500 !important;
+}
+
+#suno-downloader-wrapper .song-meta .private {
+  color: #ef4444 !important;
+  font-weight: 500 !important;
+}
+
+#suno-downloader-wrapper #selectControls {
+  display: flex !important;
+  gap: 5px !important;
+  align-items: center !important;
+  padding: 4px 10px !important;
+  flex-wrap: wrap !important;
+  color: #f4f4f5 !important;
+}
+
+#suno-downloader-wrapper #filterControls {
+  display: flex !important;
+  gap: 8px !important;
+  margin-bottom: 4px !important;
+  align-items: center !important;
+  padding: 8px 10px !important;
+  background: #27272a !important;
+  border-radius: 6px !important;
+  flex-wrap: wrap !important;
+  color: #f4f4f5 !important;
+  font-size: 12px !important;
+}
+
+#suno-downloader-wrapper #filterControls label {
+  margin: 0 !important;
+  flex-shrink: 0 !important;
+  font-size: 12px !important;
+  color: #f4f4f5 !important;
+}
+
+#suno-downloader-wrapper #songCount {
+  font-size: 12px !important;
+  color: #a1a1aa !important;
+  margin-left: auto !important;
+  flex-shrink: 0 !important;
+}
+
+#suno-downloader-wrapper #downloadTypeControls {
+  display: flex !important;
+  gap: 8px !important;
+  margin-bottom: 6px !important;
+  align-items: center !important;
+  padding: 8px 10px !important;
+  background: #27272a !important;
+  border-radius: 6px !important;
+  flex-wrap: wrap !important;
+  color: #f4f4f5 !important;
+  font-size: 12px !important;
+}
+
+#suno-downloader-wrapper #downloadTypeControls label {
+  margin: 0 !important;
+  padding: 0 !important;
+  font-size: 12px !important;
+  color: #f4f4f5 !important;
+}
+
+#suno-downloader-wrapper #fileFormat {
+  display: flex !important;
+  gap: 8px !important;
+  align-items: center !important;
+  padding-top: 0 !important;
+  color: #f4f4f5 !important;
+  font-size: 12px !important;
+}
+
+#suno-downloader-wrapper #songListContainer input[type="text"] {
+  background: #27272a !important;
+  border-color: #3f3f46 !important;
+  color: #f4f4f5 !important;
+}
+
+#suno-downloader-wrapper #songListContainer input[type="text"]:focus {
+  border-color: #667eea !important;
+}
+

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Suno Notification Collector",
+  "name": "BetterSuno",
   "version": "2.0.0",
-  "description": "Sammelt Suno Notifications zuverlässig im Hintergrund",
+  "description": "Enhanced Suno.com experience with notifications and song downloads",
   
   "permissions": [
     "cookies",           
@@ -11,7 +11,8 @@
     "tabs",              
     "offscreen",         
     "storage",           
-    "notifications"      
+    "notifications",
+    "downloads"
   ],
   
   "host_permissions": [
@@ -27,7 +28,7 @@
   },
   
   "action": {
-    "default_title": "Suno Collector",
+    "default_title": "BetterSuno",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -39,5 +40,14 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://suno.com/*"],
+      "js": ["content.js", "downloader.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
 }

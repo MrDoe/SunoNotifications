@@ -22,6 +22,21 @@ setInterval(() => {
 const tabState = {};
 const DEFAULT_INTERVAL_MS = 120000;
 
+// Download state management
+let stopFetchRequested = false;
+let isFetching = false;
+let fetchRequestorTabId = null;
+let stopDownloadRequested = false;
+let isDownloading = false;
+let currentDownloadJobId = 0;
+let activeDownloadIds = new Set();
+const DOWNLOAD_STATE_KEY = 'sunoDownloadState';
+
+// Gate: resolves once loadState() has completed, so alarm handlers
+// don't operate on empty in-memory state after a service-worker restart.
+let stateReady;
+const stateReadyPromise = new Promise(r => { stateReady = r; });
+
 // ============================================================================
 // Persistence via chrome.storage.local
 // ============================================================================
@@ -141,7 +156,15 @@ async function refreshTokenViaClerkAPI(sessionToken) {
     });
 
     if (!response.ok) {
-      log("Clerk API refresh failed:", response.status, response.statusText);
+      let errorDetail = response.statusText;
+      try {
+        const errorData = await response.json();
+        errorDetail = JSON.stringify(errorData);
+      } catch (e) {
+        const text = await response.text();
+        errorDetail = text.slice(0, 200);
+      }
+      log("Clerk API refresh failed:", response.status, errorDetail);
       return null;
     }
 
@@ -155,6 +178,7 @@ async function refreshTokenViaClerkAPI(sessionToken) {
       };
     }
 
+    log("Clerk API response missing jwt field:", JSON.stringify(data).slice(0, 100));
     return null;
   } catch (err) {
     log("Error refreshing token via Clerk API:", err.message);
@@ -219,6 +243,7 @@ chrome.alarms.create('tokenRefresh', {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'tokenRefresh') {
+    await stateReadyPromise;
     log("⏰ ALARM: Token Refresh triggered");
     
     // Für alle aktiven Collector: Token refreshen
@@ -277,6 +302,7 @@ chrome.alarms.create('keepAlive', {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'keepAlive') {
+    await stateReadyPromise;
     log("⏰ ALARM: Keep-Alive triggered");
     
     for (const [tabId, st] of Object.entries(tabState)) {
@@ -388,6 +414,109 @@ async function ensureOffscreen() {
 }
 
 // ============================================================================
+// Fetch existing notifications from Suno API (no after_datetime_utc)
+// ============================================================================
+
+async function fetchExistingNotifications() {
+  log("fetchExistingNotifications: loading existing notifications from Suno API");
+  const st = ensureTabState("global");
+
+  let token = await ensureValidToken("global");
+  
+  // If global token fails, try to get token from any active Suno tab
+  if (!token) {
+    log("fetchExistingNotifications: global token failed, trying to find active Suno tab");
+    try {
+      const sunoTabs = await chrome.tabs.query({ url: "https://suno.com/*" });
+      if (sunoTabs.length > 0) {
+        const sunoTab = sunoTabs[0];
+        log("fetchExistingNotifications: found active Suno tab, trying to get token from tab", sunoTab.id);
+        token = await ensureValidToken(sunoTab.id);
+      }
+    } catch (err) {
+      log("fetchExistingNotifications: error finding Suno tabs:", err.message);
+    }
+  }
+
+  if (!token) {
+    log("fetchExistingNotifications: no token available from any source");
+    return { ok: false, reason: "no-token" };
+  }
+
+  try {
+    // Fetch both unread and read notifications in parallel
+    const headers = { Authorization: "Bearer " + token };
+    
+    // Fetch unread notifications
+    const params = new URLSearchParams({
+      include_inactive: 'true',  // Include read/inactive notifications
+      limit: '1000'               // Fetch more at once (most users won't have more, but be safe)
+    });
+
+    const [unreadRes, readRes] = await Promise.all([
+      fetch(`https://studio-api.prod.suno.com/api/notification/v2?${params}`, { headers }),
+      fetch(`https://studio-api.prod.suno.com/api/notification/v2/read`, { headers })
+    ]);
+
+    let incoming = [];
+
+    // Process unread notifications
+    if (unreadRes.ok) {
+      const data = await unreadRes.json();
+      incoming = incoming.concat(data.notifications || []);
+      log("fetchExistingNotifications: received", data.notifications?.length || 0, "unread notifications");
+      
+      // Update lastNotificationTime so future polling continues from here
+      if (data.notified_at) {
+        st.lastNotificationTime = data.notified_at;
+      }
+    } else {
+      log("fetchExistingNotifications: unread API returned", unreadRes.status);
+    }
+
+    // Process read notifications
+    if (readRes.ok) {
+      const data = await readRes.json();
+      incoming = incoming.concat(data.notifications || []);
+      log("fetchExistingNotifications: received", data.notifications?.length || 0, "read notifications");
+    } else {
+      log("fetchExistingNotifications: read API returned", readRes.status);
+    }
+
+    if (incoming.length) {
+      // Merge: deduplicate by id, keeping the newest version
+      const existingById = new Map();
+      for (const n of st.notifications) {
+        existingById.set(n.id, n);
+      }
+      for (const n of incoming) {
+        existingById.set(n.id, n);
+      }
+      st.notifications = Array.from(existingById.values());
+      st.notifications.sort((a, b) => {
+        const ta = new Date(a.updated_at || a.notified_at || a.created_at || 0).getTime();
+        const tb = new Date(b.updated_at || b.notified_at || b.created_at || 0).getTime();
+        return tb - ta;
+      });
+
+      saveState();
+
+      // Broadcast to UI
+      chrome.runtime.sendMessage({
+        type: "stateUpdate",
+        tabId: "global",
+        state: { ...st }
+      });
+    }
+
+    return { ok: true, count: incoming.length };
+  } catch (e) {
+    log("fetchExistingNotifications: error", e.message);
+    return { ok: false, reason: e.message };
+  }
+}
+
+// ============================================================================
 // Nachrichten vom Offscreen
 // ============================================================================
 
@@ -434,13 +563,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return true;
   }
-});
 
-// ============================================================================
-// UI → Hintergrund
-// ============================================================================
+  // Content script asks for current global state
+  if (msg.type === "contentGetState") {
+    const st = ensureTabState("global");
+    sendResponse({
+      notifications: st.notifications || [],
+      enabled: st.enabled,
+      intervalMs: st.intervalMs,
+      desktopNotificationsEnabled: st.desktopNotificationsEnabled,
+      initialAfterUtc: st.initialAfterUtc
+    });
+    return true;
+  }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Content script (or UI) requests loading existing notifications from Suno
+  if (msg.type === "contentFetchExisting") {
+    log("contentFetchExisting: message received, starting fetch");
+    stateReadyPromise.then(() => {
+      fetchExistingNotifications().then(result => {
+        log("contentFetchExisting: result =", result);
+        sendResponse(result);
+      }).catch(err => {
+        log("contentFetchExisting: error =", err.message);
+        sendResponse({ ok: false, reason: err.message });
+      });
+    });
+    return true;
+  }
+
+  // ---- UI → Hintergrund ----
+
   if (msg.type === "uiInit") {
     const st = ensureTabState(msg.tabId);
     sendResponse({ state: { ...st } });
@@ -475,6 +628,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         ensureValidToken(msg.tabId).then(token => {
           if (token) {
             log("✓ Initial token fetch successful");
+            // On first activation, load existing notifications from Suno
+            fetchExistingNotifications();
           } else {
             log("⚠ Initial token fetch failed - will retry on next alarm");
           }
@@ -515,6 +670,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Content script updates settings
+  if (msg.type === "contentUpdateSettings") {
+    const st = ensureTabState(msg.tabId || "global");
+    const settings = msg.settings || {};
+    
+    if (settings.enabled !== undefined) st.enabled = settings.enabled;
+    if (settings.intervalMs !== undefined) st.intervalMs = settings.intervalMs;
+    if (settings.desktopNotificationsEnabled !== undefined) st.desktopNotificationsEnabled = settings.desktopNotificationsEnabled;
+    if (settings.initialAfterUtc !== undefined) st.initialAfterUtc = settings.initialAfterUtc;
+    
+    log("contentUpdateSettings: updated settings for tab", msg.tabId, "- enabled:", st.enabled, "interval:", st.intervalMs);
+    
+    saveState();
+    
+    sendResponse({ ok: true, state: { ...st } });
+    return true;
+  }
+
   if (msg.type === "offscreenKeepalivePing") {
     // Keepalive wird jetzt über Chrome Alarms gehandelt
     // Dieser Handler kann bleiben für manuelle Triggers
@@ -552,6 +725,180 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+
+  // ============================================================================
+  // Download-related message handlers
+  // ============================================================================
+
+  if (msg.action === "fetch_feed_page") {
+    (async () => {
+      try {
+        const token = msg.token;
+        const cursorValue = msg.cursor || null;
+        const isPublicOnly = !!msg.isPublicOnly;
+        const userId = msg.userId || null;
+
+        if (!token) {
+          sendResponse({ ok: false, status: 0, error: "Missing token" });
+          return;
+        }
+
+        const body = {
+          limit: 20,
+          filters: {
+            disliked: "False",
+            trashed: "False",
+            fromStudioProject: { presence: "False" }
+          }
+        };
+
+        if (userId) {
+          body.filters.user = {
+            presence: "True",
+            userId: userId
+          };
+        }
+
+        if (isPublicOnly) {
+          body.filters.public = "True";
+        }
+        if (cursorValue) {
+          body.cursor = cursorValue;
+        }
+
+        const controller = new AbortController();
+        const timeoutMs = 20000;
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+        const response = await fetch('https://studio-api.prod.suno.com/api/feed/v3', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeout);
+
+        const status = response.status;
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (e) {
+          // ignore
+        }
+
+        sendResponse({
+          ok: response.ok,
+          status,
+          data
+        });
+      } catch (e) {
+        sendResponse({ ok: false, status: 0, error: e?.message || String(e) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.action === "fetch_songs") {
+    stopFetchRequested = false;
+    isFetching = true;
+    fetchRequestorTabId = sender.tab?.id || null;
+    fetchSongsList(msg.isPublicOnly, msg.maxPages, msg.checkNewOnly, msg.knownIds);
+  }
+
+  if (msg.action === "get_fetch_state") {
+    sendResponse({ isFetching: isFetching });
+    return true;
+  }
+
+  if (msg.action === "stop_fetch") {
+    stopFetchRequested = true;
+    isFetching = false;
+  }
+
+  if (msg.action === "check_stop") {
+    sendResponse({ stop: stopFetchRequested });
+    return true;
+  }
+
+  if (msg.action === "download_selected") {
+    if (isDownloading) {
+      log("⚠️ Download already running. Stop it first.");
+      chrome.runtime.sendMessage({ action: "log", text: "⚠️ Download already running. Stop it first." });
+      return;
+    }
+    stopDownloadRequested = false;
+    isDownloading = true;
+    currentDownloadJobId += 1;
+    activeDownloadIds = new Set();
+    persistDownloadState({ startedAt: Date.now() });
+    broadcastDownloadState();
+    downloadSelectedSongs(
+      msg.folderName,
+      msg.songs,
+      msg.format || 'mp3',
+      currentDownloadJobId,
+      normalizeDownloadOptions(msg.downloadOptions)
+    );
+  }
+
+  if (msg.action === "stop_download") {
+    stopDownloadRequested = true;
+    isDownloading = false;
+    persistDownloadState({ stoppedAt: Date.now() });
+    broadcastDownloadState();
+    try { chrome.runtime.sendMessage({ action: "download_stopped" }); } catch (e) {}
+  }
+
+  if (msg.action === "get_download_state") {
+    readPersistedDownloadState().then((state) => {
+      if (state) {
+        sendResponse({
+          isDownloading: !!state.isDownloading,
+          stopRequested: !!state.stopRequested,
+          jobId: state.jobId || 0
+        });
+      } else {
+        sendResponse({
+          isDownloading,
+          stopRequested: stopDownloadRequested,
+          jobId: currentDownloadJobId
+        });
+      }
+    });
+    return true;
+  }
+
+  if (msg.action === "songs_list") {
+    isFetching = false;
+    const destTab = sender.tab?.id || fetchRequestorTabId;
+    if (destTab) {
+      chrome.tabs.sendMessage(destTab, {
+        action: "songs_fetched",
+        songs: msg.songs,
+        checkNewOnly: msg.checkNewOnly
+      }).catch(() => {});
+    }
+  }
+
+  if (msg.action === "fetch_error_internal") {
+    isFetching = false;
+    const destTab = sender.tab?.id || fetchRequestorTabId;
+    if (destTab) {
+      chrome.tabs.sendMessage(destTab, { action: "fetch_error", error: msg.error }).catch(() => {});
+    }
+  }
+
+  if (msg.action === "log") {
+    // Forward log messages to content script
+    const destTab = sender.tab?.id || fetchRequestorTabId;
+    if (destTab) {
+      chrome.tabs.sendMessage(destTab, { action: "log", text: msg.text }).catch(() => {});
+    }
+  }
 });
 
 // ============================================================================
@@ -569,47 +916,339 @@ chrome.tabs.onRemoved.addListener(tabId => {
 });
 
 // ============================================================================
-// Action → Detached-Fenster öffnen
+// Download Helper Functions
 // ============================================================================
 
-chrome.action.onClicked.addListener(async () => {
-  const url = chrome.runtime.getURL('detached.html');
+async function getSunoTab() {
+  try {
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const active = activeTabs?.[0];
+    if (active?.url && active.url.includes('suno.com')) return active;
 
-  const win = await chrome.windows.create({
-    url,
-    type: "popup",
-    width: 555,
-    height: 700
-  });
+    const windowTabs = await chrome.tabs.query({ currentWindow: true });
+    const sunoInWindow = windowTabs.find(t => t.url && t.url.includes('suno.com'));
+    if (sunoInWindow) return sunoInWindow;
 
-  const st = ensureTabState("global");
-  st.detachedWindowId = win.id;
-});
+    const allTabs = await chrome.tabs.query({});
+    return allTabs.find(t => t.url && t.url.includes('suno.com')) || null;
+  } catch (e) {
+    return null;
+  }
+}
 
-chrome.windows.onRemoved.addListener((windowId) => {
-  for (const [tabId, st] of Object.entries(tabState)) {
-    if (st.detachedWindowId === windowId) {
-      st.enabled = false;
-      st.activatedAt = null;
+async function persistDownloadState(extra = {}) {
+  try {
+    await chrome.storage.local.set({
+      [DOWNLOAD_STATE_KEY]: {
+        isDownloading,
+        stopRequested: stopDownloadRequested,
+        jobId: currentDownloadJobId,
+        activeDownloadIds: Array.from(activeDownloadIds),
+        ...extra
+      }
+    });
+  } catch (e) {
+    // ignore
+  }
+}
 
-      saveState();
+async function readPersistedDownloadState() {
+  try {
+    const result = await chrome.storage.local.get(DOWNLOAD_STATE_KEY);
+    return result?.[DOWNLOAD_STATE_KEY] || null;
+  } catch (e) {
+    return null;
+  }
+}
 
-      chrome.runtime.sendMessage({
-        type: "offscreenSetState",
-        tabId,
-        state: { ...st }
-      });
+function broadcastDownloadState() {
+  try {
+    chrome.runtime.sendMessage({
+      action: 'download_state',
+      isDownloading,
+      stopRequested: stopDownloadRequested,
+      jobId: currentDownloadJobId
+    });
+  } catch (e) {
+    // ignore
+  }
+}
 
-      chrome.runtime.sendMessage({
-        type: "stateUpdate",
-        tabId,
-        state: { ...st }
-      });
+function normalizeDownloadOptions(options) {
+  return {
+    music: options?.music !== false,
+    lyrics: options?.lyrics !== false,
+    image: options?.image !== false
+  };
+}
 
-      delete st.detachedWindowId;
+async function fetchSongsList(isPublicOnly, maxPages, checkNewOnly = false, knownIds = []) {
+  const notifyTab = (message) => {
+    if (fetchRequestorTabId) {
+      chrome.tabs.sendMessage(fetchRequestorTabId, message).catch(() => {});
+    }
+  };
+  try {
+    const tab = await getSunoTab();
+    if (!tab?.id || !tab.url || !tab.url.includes("suno.com")) {
+      notifyTab({ action: "fetch_error", error: "❌ Error: Please open Suno.com in the active tab." });
+      return;
+    }
+    const tabId = tab.id;
+
+    if (!checkNewOnly) {
+      notifyTab({ action: "log", text: "🔑 Extracting Auth Token..." });
+    }
+
+    const tokenResults = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: "MAIN",
+      func: async () => {
+        try {
+          if (window.Clerk && window.Clerk.session) {
+            return await window.Clerk.session.getToken();
+          }
+          return null;
+        } catch (e) { return null; }
+      }
+    });
+
+    const token = tokenResults[0]?.result;
+
+    if (!token) {
+      notifyTab({ action: "fetch_error", error: "❌ Error: Could not find Auth Token. Log in first!" });
+      return;
+    }
+
+    const userId = await fetchCurrentUserId(token);
+
+    if (!checkNewOnly) {
+      notifyTab({ action: "log", text: "✅ Token found! Fetching songs list..." });
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: (t, p, m, c, k, u) => {
+        window.sunoAuthToken = t;
+        window.sunoPublicOnly = p;
+        window.sunoMaxPages = m;
+        window.sunoCheckNewOnly = c;
+        window.sunoKnownIds = k;
+        window.sunoUserId = u;
+        window.sunoStopFetch = false;
+        window.sunoMode = "fetch";
+      },
+      args: [token, isPublicOnly, maxPages, checkNewOnly, knownIds, userId]
+    });
+
+    // Inject the fetch script (content-fetcher.js)
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      files: ["content-fetcher.js"]
+    });
+
+  } catch (err) {
+    log(err);
+    notifyTab({ action: "fetch_error", error: "❌ System Error: " + err.message });
+  }
+}
+
+async function fetchCurrentUserId(token) {
+  try {
+    const endpoints = [
+      'https://studio-api.prod.suno.com/api/me/',
+      'https://studio-api.prod.suno.com/api/me'
+    ];
+
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+
+        const direct = data?.id || data?.user_id || data?.user?.id || data?.profile?.id;
+        if (typeof direct === 'string' && direct.length > 0) return direct;
+
+        const fromTree = findUuidLikeId(data);
+        if (fromTree) return fromTree;
+      } catch (e) {
+        // try next endpoint
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return null;
+}
+
+function findUuidLikeId(obj) {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const stack = [obj];
+  let safety = 0;
+
+  while (stack.length && safety < 5000) {
+    safety += 1;
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object') continue;
+
+    for (const value of Object.values(cur)) {
+      if (typeof value === 'string' && uuidRegex.test(value)) {
+        return value;
+      }
+      if (value && typeof value === 'object') {
+        stack.push(value);
+      }
     }
   }
-});
+
+  return null;
+}
+
+async function downloadSelectedSongs(folderName, songs, format = 'mp3', jobId = 0, downloadOptions = { music: true, lyrics: true, image: true }) {
+  const cleanFolder = folderName.replace(/[^a-zA-Z0-9_-]/g, "");
+
+  function sanitizeFilename(name) {
+    return name.replace(/[<>:"/\\|?*]/g, "").trim().substring(0, 100);
+  }
+
+  // Check platform
+  let isAndroid = false;
+  try {
+    const platformInfo = await chrome.runtime.getPlatformInfo();
+    isAndroid = platformInfo?.os === 'android';
+  } catch (e) {
+    // ignore
+  }
+
+  function buildDownloadFilename(baseName) {
+    const folderPrefix = sanitizeFilename(cleanFolder);
+    if (isAndroid) {
+      return folderPrefix ? `${folderPrefix}-${baseName}` : baseName;
+    }
+    return cleanFolder ? `${cleanFolder}/${baseName}` : baseName;
+  }
+
+  async function downloadOneFile(url, filename) {
+    const downloadId = await chrome.downloads.download({
+      url,
+      filename,
+      conflictAction: "uniquify"
+    });
+    if (typeof downloadId === 'number') {
+      activeDownloadIds.add(downloadId);
+      persistDownloadState();
+    }
+    return true;
+  }
+
+  const shouldDownloadMusic = !!downloadOptions?.music;
+  const shouldDownloadLyrics = !!downloadOptions?.lyrics;
+  const shouldDownloadImage = !!downloadOptions?.image;
+  const selectedTypes = [];
+  if (shouldDownloadMusic) selectedTypes.push(format.toUpperCase());
+  if (shouldDownloadLyrics) selectedTypes.push('lyrics');
+  if (shouldDownloadImage) selectedTypes.push('images');
+
+  if (selectedTypes.length === 0) {
+    chrome.runtime.sendMessage({ action: "log", text: '⚠️ Nothing selected to download.' });
+    stopDownloadRequested = false;
+    isDownloading = false;
+    activeDownloadIds = new Set();
+    persistDownloadState({ finishedAt: Date.now() });
+    broadcastDownloadState();
+    chrome.runtime.sendMessage({ action: "download_complete", stopped: false });
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: "log", text: `🚀 Starting download of ${songs.length} song(s): ${selectedTypes.join(', ')}...` });
+
+  if (isAndroid) {
+    chrome.runtime.sendMessage({ action: "log", text: '📱 Android detected: saving files without subfolders.' });
+  }
+
+  let downloadedCount = 0;
+  let failedCount = 0;
+
+  for (const song of songs) {
+    if (stopDownloadRequested || !isDownloading || jobId !== currentDownloadJobId) {
+      chrome.runtime.sendMessage({ action: "log", text: "⏹️ Download stopped by user." });
+      break;
+    }
+
+    const title = song.title || `Untitled_${song.id}`;
+    const safeTitle = sanitizeFilename(title);
+
+    try {
+      // 1. Download Music
+      if (shouldDownloadMusic && song.audio_url) {
+        const ext = format.toLowerCase();
+        const baseName = `${safeTitle}_${song.id.slice(-4)}.${ext}`;
+        const filename = buildDownloadFilename(baseName);
+        await downloadOneFile(song.audio_url, filename);
+      }
+
+      // 2. Download Lyrics (Blob/Data URL approach)
+      if (shouldDownloadLyrics && (song.lyrics || song.metadata?.prompt)) {
+        const lyrics = song.lyrics || song.metadata?.prompt;
+        const blob = new Blob([lyrics], { type: 'text/plain' });
+        const reader = new FileReader();
+        const lyricsDataUrl = await new Promise((resolve) => {
+          reader.onload = () => resolve(reader.result);
+          reader.readAsDataURL(blob);
+        });
+        const baseName = `${safeTitle}_${song.id.slice(-4)}.txt`;
+        const filename = buildDownloadFilename(baseName);
+        await downloadOneFile(lyricsDataUrl, filename);
+      }
+
+      // 3. Download Image
+      if (shouldDownloadImage && song.image_url) {
+        const baseName = `${safeTitle}_${song.id.slice(-4)}.jpg`;
+        const filename = buildDownloadFilename(baseName);
+        await downloadOneFile(song.image_url, filename);
+      }
+
+      downloadedCount++;
+      chrome.runtime.sendMessage({ action: "log", text: `✅ Downloaded: ${title} (${downloadedCount}/${songs.length})` });
+    } catch (err) {
+      failedCount++;
+      chrome.runtime.sendMessage({ action: "log", text: `❌ Failed: ${title} - ${err.message}` });
+    }
+
+    // Small delay between songs
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  stopDownloadRequested = false;
+  isDownloading = false;
+  activeDownloadIds = new Set();
+  persistDownloadState({ finishedAt: Date.now() });
+  broadcastDownloadState();
+
+  chrome.runtime.sendMessage({
+    action: "log",
+    text: `✅ Download complete! ${downloadedCount} succeeded, ${failedCount} failed.`
+  });
+  chrome.runtime.sendMessage({ action: "download_complete", stopped: false });
+}
+
+// Keep active download IDs in sync
+try {
+  chrome.downloads?.onChanged?.addListener((delta) => {
+    if (!delta || typeof delta.id !== 'number') return;
+    const state = delta.state?.current;
+    if (state === 'complete' || state === 'interrupted') {
+      if (activeDownloadIds.delete(delta.id)) {
+        persistDownloadState();
+      }
+    }
+  });
+} catch (e) {
+  // ignore
+}
 
 // ============================================================================
 // Desktop Notifications
@@ -738,17 +1377,43 @@ log("🚀 Background Service Worker gestartet");
 log("Token-Refresh via Clerk API alle 45 Minuten");
 log("Tab Keep-Alive alle 5 Minuten");
 
+// Watchdog alarm: re-ensures the offscreen document is alive and polling
+// for any enabled state. Covers service-worker restarts + offscreen GC.
+chrome.alarms.create('ensureOffscreenAlive', {
+  delayInMinutes: 0.5,
+  periodInMinutes: 2
+});
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'ensureOffscreenAlive') {
+    await stateReadyPromise;
+    for (const [tabId, st] of Object.entries(tabState)) {
+      if (st.enabled) {
+        log('⏰ WATCHDOG: ensuring offscreen is alive for', tabId);
+        await ensureOffscreen();
+        chrome.runtime.sendMessage({
+          type: "offscreenSetState",
+          tabId,
+          state: { ...st }
+        });
+      }
+    }
+  }
+});
+
 // Restore persisted state, then restart polling for any state that was enabled.
 loadState().then(() => {
-  const globalSt = tabState['global'];
-  if (globalSt?.enabled) {
-    log('loadState: restarting polling for global (was enabled at last save)');
-    ensureOffscreen().then(() => {
-      chrome.runtime.sendMessage({
-        type: "offscreenSetState",
-        tabId: 'global',
-        state: { ...globalSt }
+  stateReady();  // unblock alarm handlers
+  for (const [tabId, st] of Object.entries(tabState)) {
+    if (st.enabled) {
+      log('loadState: restarting polling for', tabId);
+      ensureOffscreen().then(() => {
+        chrome.runtime.sendMessage({
+          type: "offscreenSetState",
+          tabId,
+          state: { ...st }
+        });
       });
-    });
+    }
   }
 });
