@@ -89,12 +89,11 @@
   min-width: 20px !important;
   height: 20px !important;
   border-radius: 10px !important;
-  display: flex !important;
   align-items: center !important;
   justify-content: center !important;
   padding: 0 5px !important;
   box-sizing: border-box !important;
-  display: none !important; /* hidden when 0 */
+  display: none !important; /* hidden when 0; JS toggles to flex */
   pointer-events: none !important;
 }
 
@@ -498,6 +497,7 @@
 #bettersuno-panel .btn-secondary {
   background: #f5f5f5 !important;
   color: #333 !important;
+  border: 1px solid #ddd !important;
 }
 
 /* Mini Player Styles */
@@ -612,9 +612,6 @@
   background: var(--bettersuno-accent) !important;
   border-color: var(--bettersuno-accent) !important;
   color: white !important;
-}
-
-  border: 1px solid #ddd !important;
 }
 
 #bettersuno-panel .btn-secondary:hover:not(:disabled) {

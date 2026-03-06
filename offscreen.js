@@ -1,23 +1,3 @@
-// Es gab nur ein Problem mit dem Handling des abgelaufenen Token
-// Sah dann aus wie ein Freeze
-// Beide Methoden zum Verhindern eines Freeze hier vorläufig noch drin,
-// falls sie doch noch benötigt werden:
-
-// Prevent Chrome from freezing this offscreen document
-/*
-const ctx = new AudioContext();
-const osc = ctx.createOscillator();
-osc.frequency.value = 0; // inaudible
-osc.connect(ctx.destination);
-osc.start();
-*/
-
-// Prevent Chrome/Edge from freezing this offscreen document
-/*
-const pc = new RTCPeerConnection();
-pc.createDataChannel("keepalive");
-*/
-
 function logFormatDate(ts) {
   const date = ts ? new Date(ts) : null;
   if (date) {
@@ -39,13 +19,14 @@ setInterval(() => {
 }, 60000);
 
 // -------------------------------------------------------------
-// offscreen.js — dauerhaftes Polling pro Tab
+// Persistent per-tab polling
+// -------------------------------------------------------------
 
 const POLLERS = {}; // tabId → intervalId
 const STATES = {};  // tabId → last known state
 
 const LAST_REQUEST_AT = {}; // tabId → timestamp (ms)
-var LAST_REQUEST_AT_ALL = 0; // global timestamp (ms)
+let LAST_REQUEST_AT_ALL = 0; // global timestamp (ms)
 
 // Notify background that offscreen document is running
 try {
@@ -59,13 +40,13 @@ try {
   log("Failed to connect to background:", e.message);
 }
 
-// Alle 30 Sekunden Keepalive-Ping an background senden
+// Send keepalive ping to background every 30 seconds
 setInterval(() => {
   chrome.runtime.sendMessage({ type: "offscreenKeepalivePing" });
 }, 30000);
 
 // -------------------------------------------------------------
-// Hintergrund um Token bitten
+// Request token from background
 // -------------------------------------------------------------
 async function getToken(tabId) {
   return new Promise(resolve => {
@@ -77,7 +58,7 @@ async function getToken(tabId) {
 }
 
 // -------------------------------------------------------------
-// Polling-Loop pro Tab
+// Polling loop per tab
 // -------------------------------------------------------------
 async function pollOnce(tabId) {
   log("pollOnce START for tab", tabId, "using token", STATES[tabId].token?.slice(0, 12), "…");
@@ -87,18 +68,18 @@ async function pollOnce(tabId) {
   
   const token = await getToken(tabId);
   if (!token) {
-    log("Kein Token für Tab", tabId);
+    log("No token for tab", tabId);
     chrome.runtime.sendMessage({
       type: "offscreenNoToken",
       tabId
     });
     return;
-  } else {
-    if (st.token !== token) {
-      st.token = token;
-      st.tokenTimestamp = Date.now();
-      st.requestCount = 0;
-    }
+  }
+
+  if (st.token !== token) {
+    st.token = token;
+    st.tokenTimestamp = Date.now();
+    st.requestCount = 0;
   }
 
   const afterUtc = st.lastNotificationTime ?? st.initialAfterUtc;
@@ -107,28 +88,24 @@ async function pollOnce(tabId) {
     return;
   }
 
-  if (true) {
-    const now = Date.now();
-    const last = LAST_REQUEST_AT[tabId] || 0;
-    if (last && (now - last) < (st.intervalMs * 0.5)) {
-      log("LAST_REQUEST_AT 50% burst prevention", {last, now, interval: st.intervalMs});
-      return;
-    }
-    log("pollOnce setting LAST_REQUEST_AT for tab", tabId, "to", now);
-    LAST_REQUEST_AT[tabId] = now;
+  const now = Date.now();
+  const lastTab = LAST_REQUEST_AT[tabId] || 0;
+  if (lastTab && (now - lastTab) < (st.intervalMs * 0.5)) {
+    log("LAST_REQUEST_AT 50% burst prevention", {last: lastTab, now, interval: st.intervalMs});
+    return;
   }
-  if (true) {
-    const now = Date.now();
-    const last = LAST_REQUEST_AT_ALL;
-    var intMs = Math.round(st.intervalMs * 0.7);
-    if (intMs < 8000) { intMs = 8000}; // Minimum 8 Sek. 
-    if (last && (now - last) < intMs) {
-      log("LAST_REQUEST_AT_ALL 70% burst prevention", {last, now, interval: st.intervalMs});
-      return;
-    }
-    log("pollOnce setting LAST_REQUEST_AT_ALL to", now);
-    LAST_REQUEST_AT_ALL = now;
-  }   
+  log("pollOnce setting LAST_REQUEST_AT for tab", tabId, "to", now);
+  LAST_REQUEST_AT[tabId] = now;
+
+  const lastAll = LAST_REQUEST_AT_ALL;
+  let intMs = Math.round(st.intervalMs * 0.7);
+  if (intMs < 8000) { intMs = 8000; } // Minimum 8 seconds
+  if (lastAll && (now - lastAll) < intMs) {
+    log("LAST_REQUEST_AT_ALL 70% burst prevention", {last: lastAll, now, interval: st.intervalMs});
+    return;
+  }
+  log("pollOnce setting LAST_REQUEST_AT_ALL to", now);
+  LAST_REQUEST_AT_ALL = now;
 
   let url = "https://studio-api.prod.suno.com/api/notification/v2";
   url += `?after_datetime_utc=${encodeURIComponent(afterUtc)}`;
@@ -142,7 +119,7 @@ async function pollOnce(tabId) {
     });
     log("pollOnce END for tab", tabId, "status:", res.status);
     if (res.status === 401 || res.status === 403) {
-      log("401/403: " + res.status + " → Token abgelaufen für Tab", tabId);
+      log("401/403: " + res.status + " → Token expired for tab", tabId);
       chrome.runtime.sendMessage({
         type: "offscreenTokenExpired",
         tabId
@@ -150,7 +127,7 @@ async function pollOnce(tabId) {
       return;
     }
     if (!res.ok) {
-      log("Unerwarteter Fehlerstatus", res.status);
+      log("Unexpected error status", res.status);
       return;
     }
     const data = await res.json();
@@ -187,7 +164,7 @@ async function pollOnce(tabId) {
 }
 
 // -------------------------------------------------------------
-// Polling starten/stoppen
+// Start/stop polling
 // -------------------------------------------------------------
 function restartPolling(tabId) {
   log("restartPolling for tab", tabId);
@@ -195,7 +172,7 @@ function restartPolling(tabId) {
   const st = STATES[tabId];
   if (!st) return;
 
-  // Alte Intervalle stoppen
+  // Stop old intervals
   if (POLLERS[tabId]) {
     clearInterval(POLLERS[tabId]);
     delete POLLERS[tabId];
@@ -203,17 +180,16 @@ function restartPolling(tabId) {
 
   if (!st.enabled) return;
 
-  // Neuer Interval, aber nur gültig, wenn Generation übereinstimmt
   POLLERS[tabId] = setInterval(() => {
     pollOnce(tabId);
   }, st.intervalMs);
 
-  // Sofortiger erster Poll
+  // Immediate first poll
   pollOnce(tabId);
 }
 
 // -------------------------------------------------------------
-// Nachrichten vom Hintergrund
+// Messages from background
 // -------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "offscreenSetState") {
@@ -235,11 +211,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === "offscreenSetToken") {
     log("received NEW TOKEN for tab", msg.tabId, "token:", msg.token.slice(0, 12), "…");
-    if (!! msg.token) { 
+    if (msg.token) {
       STATES[msg.tabId].token = msg.token;
     }
     sendResponse({ ok: true });
     return true;
   }
-
 });

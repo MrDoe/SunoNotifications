@@ -5,6 +5,7 @@
   // Track how many notifications we've seen so we know which are "new"
   let lastSeenCount = 0;
   let panelOpen = false;
+  let currentTab = 'notifications';
 
   // ---- Build DOM ----
   const root = document.createElement('div');
@@ -292,6 +293,17 @@
     });
   }
 
+  // ---- HTML escaping ----
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function escapeAttr(str) {
+    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   // ---- Time formatting ----
   function formatAgo(ts) {
     if (!ts) return '';
@@ -397,11 +409,14 @@
 
     const html = notifications.slice(0, 50).map(n => {
       const d = describeNotif(n);
+      const safeHandle = escapeHtml(d.firstHandle);
+      const safeWho = escapeHtml(d.who);
+      const safeText = escapeHtml(d.text);
       const avatarHtml = d.avatar
-        ? `<a href="https://suno.com/@${d.firstHandle}" target="_blank"><img class="bettersuno-avatar" src="${d.avatar}"></a>`
+        ? `<a href="https://suno.com/@${safeHandle}" target="_blank"><img class="bettersuno-avatar" src="${escapeAttr(d.avatar)}"></a>`
         : '';
       const contentImgHtml = d.contentImg
-        ? `<a href="${d.url}" target="_blank"><img class="bettersuno-content-img" src="${d.contentImg}"></a>`
+        ? `<a href="${escapeAttr(d.url)}" target="_blank"><img class="bettersuno-content-img" src="${escapeAttr(d.contentImg)}"></a>`
         : '';
 
       return `
@@ -409,8 +424,8 @@
           ${avatarHtml}
           <div class="bettersuno-body">
             <div class="bettersuno-text">
-              <a href="https://suno.com/@${d.firstHandle}" target="_blank">${d.who}</a>
-              ${d.text}
+              <a href="https://suno.com/@${safeHandle}" target="_blank">${safeWho}</a>
+              ${safeText}
             </div>
             <div class="bettersuno-time">${formatAgo(d.ts)}</div>
           </div>

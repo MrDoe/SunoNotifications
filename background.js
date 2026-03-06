@@ -50,11 +50,24 @@ const stateReadyPromise = new Promise(r => { stateReady = r; });
 let offscreenCreating = false;
 let offscreenExists = false;
 
-// Initialize state
+// Initialize state and restart polling for any enabled collectors
 (async function init() {
   log("Initializing background...");
   await loadState();
   stateReady();
+
+  for (const [tabId, st] of Object.entries(tabState)) {
+    if (st.enabled) {
+      log('init: restarting polling for', tabId);
+      await ensureOffscreen();
+      await sendToOffscreen({
+        type: "offscreenSetState",
+        tabId,
+        state: { ...st }
+      });
+    }
+  }
+
   log("Background initialization complete.");
 })();
 
@@ -120,7 +133,6 @@ function ensureTabState(tabId) {
       notifications: [],
       lastError: null,
       desktopNotificationsEnabled: true,
-      // NEU: Clerk Session Token
       clerkSessionToken: null,
       clerkSessionExpiry: null
     };
@@ -144,11 +156,11 @@ async function getClerkSessionFromCookies() {
     });
     
     if (cookie?.value) {
-      log("Clerk __session Cookie gefunden:", cookie.value.slice(0, 20) + "...");
+      log("Clerk __session Cookie found:", cookie.value.slice(0, 20) + "...");
       return cookie.value;
     }
     
-    log("Clerk __session Cookie NICHT gefunden");
+    log("Clerk __session Cookie NOT found");
     return null;
   } catch (err) {
     log("Error getting Clerk session cookie:", err.message);
@@ -157,12 +169,12 @@ async function getClerkSessionFromCookies() {
 }
 
 /**
- * Refresht das Bearer Token direkt über Clerk's API
- * Nutzt das Session Token aus dem Cookie
+ * Refreshes the Bearer Token directly via Clerk's API.
+ * Uses the Session Token from the cookie.
  */
 async function refreshTokenViaClerkAPI(sessionToken) {
   try {
-    // Clerk's Token-Endpoint (Standard für alle Clerk-Apps)
+    // Clerk's Token Endpoint (standard for all Clerk apps)
     const response = await fetch('https://clerk.suno.com/v1/client/sessions/active/tokens', {
       method: 'POST',
       headers: {
@@ -170,7 +182,7 @@ async function refreshTokenViaClerkAPI(sessionToken) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        template: ''  // Leerer Template-Name = Standard Bearer Token
+        template: ''  // Empty template name = standard Bearer Token
       })
     });
 
@@ -193,7 +205,7 @@ async function refreshTokenViaClerkAPI(sessionToken) {
       log("NEW Bearer Token via Clerk API:", data.jwt.slice(0, 20) + "...");
       return {
         token: data.jwt,
-        expiresAt: Date.now() + (50 * 60 * 1000) // 50 Minuten
+        expiresAt: Date.now() + (50 * 60 * 1000) // 50 minutes
       };
     }
 
@@ -206,8 +218,8 @@ async function refreshTokenViaClerkAPI(sessionToken) {
 }
 
 /**
- * Hauptfunktion: Token bereitstellen - mit automatischem Refresh
- * Funktioniert OHNE aktiven Tab!
+ * Main function: provide token with automatic refresh.
+ * Works WITHOUT an active tab!
  */
 async function ensureValidTokenCookieBased(tabId) {
   log("ensureValidTokenCookieBased called for tab", tabId);
@@ -215,7 +227,7 @@ async function ensureValidTokenCookieBased(tabId) {
   const st = ensureTabState(tabId);
   const now = Date.now();
 
-  // Prüfen: Haben wir ein gültiges Token im Cache?
+  // Check if we have a valid cached token
   if (st.token && st.tokenTimestamp && (now - st.tokenTimestamp < 45 * 60 * 1000)) {
     log("Returning CACHED token (age:", Math.floor((now - st.tokenTimestamp) / 60000), "min)");
     return st.token;
@@ -223,21 +235,21 @@ async function ensureValidTokenCookieBased(tabId) {
 
   log("Token expired or missing - fetching new token via Clerk API");
 
-  // Schritt 1: Session Token aus Cookie holen
+  // Step 1: Get session token from cookie
   const sessionToken = await getClerkSessionFromCookies();
   if (!sessionToken) {
-    log("FEHLER: Kein Clerk Session Cookie gefunden - User muss bei Suno eingeloggt sein!");
+    log("ERROR: No Clerk Session Cookie found - user must be logged in to Suno!");
     return null;
   }
 
-  // Schritt 2: Neues Bearer Token von Clerk API holen
+  // Step 2: Get new Bearer Token from Clerk API
   const tokenData = await refreshTokenViaClerkAPI(sessionToken);
   if (!tokenData) {
-    log("FEHLER: Clerk API Token-Refresh fehlgeschlagen");
+    log("ERROR: Clerk API Token refresh failed");
     return null;
   }
 
-  // Schritt 3: Token cachen
+  // Step 3: Cache token
   st.token = tokenData.token;
   st.tokenTimestamp = now;
   st.clerkSessionToken = sessionToken;
@@ -252,48 +264,33 @@ async function ensureValidTokenCookieBased(tabId) {
 // ============================================================================
 
 /**
- * Service Worker Alarm für automatischen Token-Refresh
- * Läuft alle 45 Minuten, unabhängig von Tab-Status
+ * Service Worker Alarm for automatic token refresh.
+ * Runs every 45 minutes, independent of tab status.
  */
 chrome.alarms.create('tokenRefresh', {
-  delayInMinutes: 1,        // Erste Ausführung nach 1 Minute
-  periodInMinutes: 45       // Dann alle 45 Minuten
-});
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === 'tokenRefresh') {
-    await stateReadyPromise;
-    log("⏰ ALARM: Token Refresh triggered");
-    
-    // Für alle aktiven Collector: Token refreshen
-    for (const [tabId, st] of Object.entries(tabState)) {
-      if (st.enabled) {
-        log("⏰ Refreshing token for active collector", tabId);
-        await ensureValidTokenCookieBased(tabId);
-      }
-    }
-  }
+  delayInMinutes: 1,
+  periodInMinutes: 45
 });
 
 /**
- * Sanfter Keep-Alive ohne Tab-Reload
- * Verhindert Tab-Discarding durch minimale Interaktion
+ * Gentle keep-alive without tab reload.
+ * Prevents tab discarding through minimal interaction.
  */
 async function keepTabAlive(tabId) {
   // Tab-independent mode: no specific Suno tab required
   if (typeof tabId !== 'number' || isNaN(tabId)) return false;
   try {
-    // Prüfen ob Tab existiert
+    // Check if tab exists
     const tab = await chrome.tabs.get(tabId);
     if (!tab) return false;
 
-    // Minimale Script-Injection um Tab "aktiv" zu halten
-    // Dies verhindert dass Edge den Tab einfriert
+    // Minimal script injection to keep tab active.
+    // Prevents Edge/Chrome from freezing the tab.
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: false },
-      world: "ISOLATED",  // ISOLATED statt MAIN - weniger invasiv
+      world: "ISOLATED",
       func: () => {
-        // Timestamp setzen - minimal invasiv
+        // Set timestamp - minimally invasive
         if (!window.__sunoKeepalive) {
           window.__sunoKeepalive = { count: 0 };
         }
@@ -311,29 +308,16 @@ async function keepTabAlive(tabId) {
 }
 
 /**
- * Keep-Alive Alarm - alle 5 Minuten
- * Deutlich seltener als Tab-Reload, aber genug um Discarding zu verhindern
+ * Keep-Alive Alarm - every 5 minutes.
+ * Less frequent than tab reload, but enough to prevent discarding.
  */
 chrome.alarms.create('keepAlive', {
   delayInMinutes: 1,
-  periodInMinutes: 5  // Alle 5 Minuten statt 10 Minuten Reload
-});
-
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === 'keepAlive') {
-    await stateReadyPromise;
-    log("⏰ ALARM: Keep-Alive triggered");
-    
-    for (const [tabId, st] of Object.entries(tabState)) {
-      if (st.enabled) {
-        await keepTabAlive(typeof tabId === 'string' ? Number(tabId) : tabId);
-      }
-    }
-  }
+  periodInMinutes: 5
 });
 
 // ============================================================================
-// FALLBACK: Token aus MAIN World (nur wenn Cookie-Methode fehlschlägt)
+// FALLBACK: Token from MAIN World (only if cookie method fails)
 // ============================================================================
 
 async function fetchTokenDirect(tabId) {
@@ -372,31 +356,31 @@ async function fetchTokenDirect(tabId) {
 }
 
 /**
- * Haupt-Token-Funktion mit Fallback-Strategie
+ * Main token function with fallback strategy
  */
 async function ensureValidToken(tabId) {
   log("ensureValidToken called for tab", tabId);
 
-  // STRATEGIE 1: Cookie-basiert (funktioniert auch bei schlafendem Tab)
+  // STRATEGY 1: Cookie-based (works even with sleeping tab)
   const cookieToken = await ensureValidTokenCookieBased(tabId);
   if (cookieToken) {
-    log("✓ Token via Cookie-Methode erhalten");
+    log("✓ Token obtained via cookie method");
     return cookieToken;
   }
 
-  log("⚠ Cookie-Methode fehlgeschlagen, versuche MAIN-World-Fallback...");
+  log("⚠ Cookie method failed, trying MAIN world fallback...");
 
-  // STRATEGIE 2: Fallback zu MAIN world (alter Ansatz)
+  // STRATEGY 2: Fallback to MAIN world (legacy approach)
   const st = ensureTabState(tabId);
   const MAX_AGE = 50 * 60 * 1000;
 
-  // Cache prüfen
+  // Check cache
   if (st.token && st.tokenTimestamp && Date.now() - st.tokenTimestamp < MAX_AGE) {
     log("✓ Returning cached token from MAIN world method");
     return st.token;
   }
 
-  // Versuche Token aus MAIN world zu holen
+  // Try getting token from MAIN world
   for (let i = 0; i < 3; i++) {
     log(`Attempt ${i + 1}/3: fetchTokenDirect for tab`, tabId);
     const token = await fetchTokenDirect(tabId);
@@ -412,13 +396,13 @@ async function ensureValidToken(tabId) {
     await new Promise(r => setTimeout(r, 500));
   }
 
-  log("❌ FEHLER: Beide Token-Strategien fehlgeschlagen!");
+  log("❌ ERROR: Both token strategies failed!");
   st.lastError = "Token refresh failed - both strategies exhausted";
   return null;
 }
 
 // ============================================================================
-// Offscreen-Dokument
+// Offscreen Document
 // ============================================================================
 
 async function ensureOffscreen() {
@@ -593,7 +577,7 @@ async function fetchExistingNotifications() {
 }
 
 // ============================================================================
-// Nachrichten vom Offscreen
+// Messages from Offscreen
 // ============================================================================
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -630,10 +614,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "offscreenTokenExpired" || msg.type === "offscreenNoToken") {
     log("[NVO] Token expired/missing for Tab", msg.tabId, "- triggering refresh");
     
-    // WICHTIG: Kein Tab-Reload mehr nötig!
-    // Token wird beim nächsten ensureValidToken() automatisch refreshed
+    // No tab reload needed!
+    // Token will be auto-refreshed on next ensureValidToken() call
     const st = ensureTabState(msg.tabId);
-    st.token = null;  // Token invalidieren
+    st.token = null;  // Invalidate token
     st.tokenTimestamp = null;
     
     sendResponse({ ok: true });
@@ -668,7 +652,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ---- UI → Hintergrund ----
+  // ---- UI → Background ----
 
   if (msg.type === "uiInit") {
     const st = ensureTabState(msg.tabId);
@@ -698,7 +682,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         st.requestCount = 0;
         st.totalRequests = 0;
         
-        log("✓ Collector aktiviert für Tab", msg.tabId);
+        log("✓ Collector activated for tab", msg.tabId);
         
         // Token sofort holen (nicht auf Alarm warten)
         ensureValidToken(msg.tabId).then(token => {
@@ -713,7 +697,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     } else {
       st.activatedAt = null;
-      log("Collector deaktiviert für Tab", msg.tabId);
+      log("Collector deactivated for tab", msg.tabId);
     }
 
     saveState();
@@ -765,8 +749,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "offscreenKeepalivePing") {
-    // Keepalive wird jetzt über Chrome Alarms gehandelt
-    // Dieser Handler kann bleiben für manuelle Triggers
+    // Keepalive is now handled via Chrome Alarms
+    // This handler remains for manual triggers
     for (const [tabId, st] of Object.entries(tabState)) {
       if (st.enabled) {
         keepTabAlive(Number(tabId));
@@ -1020,7 +1004,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ============================================================================
-// Tab geschlossen
+// Tab closed
 // ============================================================================
 
 // Global (tab-independent) state is preserved when a Suno tab closes.
@@ -1509,12 +1493,12 @@ chrome.notifications.onClosed.addListener((notifId) => {
 });
 
 // ============================================================================
-// Initialisierung beim Start
+// Initialization at startup
 // ============================================================================
 
-log("🚀 Background Service Worker gestartet");
-log("Token-Refresh via Clerk API alle 45 Minuten");
-log("Tab Keep-Alive alle 5 Minuten");
+log("🚀 Background Service Worker started");
+log("Token refresh via Clerk API every 45 minutes");
+log("Tab keep-alive every 5 minutes");
 
 // Watchdog alarm: re-ensures the offscreen document is alive and polling
 // for any enabled state. Covers service-worker restarts + offscreen GC.
@@ -1524,8 +1508,28 @@ chrome.alarms.create('ensureOffscreenAlive', {
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  await stateReadyPromise;
+
+  if (alarm.name === 'tokenRefresh') {
+    log("⏰ ALARM: Token Refresh triggered");
+    for (const [tabId, st] of Object.entries(tabState)) {
+      if (st.enabled) {
+        log("⏰ Refreshing token for active collector", tabId);
+        await ensureValidTokenCookieBased(tabId);
+      }
+    }
+  }
+
+  if (alarm.name === 'keepAlive') {
+    log("⏰ ALARM: Keep-Alive triggered");
+    for (const [tabId, st] of Object.entries(tabState)) {
+      if (st.enabled) {
+        await keepTabAlive(typeof tabId === 'string' ? Number(tabId) : tabId);
+      }
+    }
+  }
+
   if (alarm.name === 'ensureOffscreenAlive') {
-    await stateReadyPromise;
     for (const [tabId, st] of Object.entries(tabState)) {
       if (st.enabled) {
         log('⏰ WATCHDOG: ensuring offscreen is alive for', tabId);
@@ -1557,20 +1561,3 @@ try {
 } catch (e) {
   log("Note: onConnect listener failed (may not be available)");
 }
-
-// Restore persisted state, then restart polling for any state that was enabled.
-loadState().then(() => {
-  stateReady();  // unblock alarm handlers
-  for (const [tabId, st] of Object.entries(tabState)) {
-    if (st.enabled) {
-      log('loadState: restarting polling for', tabId);
-      ensureOffscreen().then(() => {
-        sendToOffscreen({
-          type: "offscreenSetState",
-          tabId,
-          state: { ...st }
-        });
-      });
-    }
-  }
-});
