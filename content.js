@@ -403,38 +403,71 @@
     }
 
     if (!notifications || notifications.length === 0) {
-      list.innerHTML = '<div class="bettersuno-empty">No notifications yet</div>';
+      list.textContent = '';
+      const emptyDiv = document.createElement('div');
+      emptyDiv.className = 'bettersuno-empty';
+      emptyDiv.textContent = 'No notifications yet';
+      list.appendChild(emptyDiv);
       return;
     }
 
-    const html = notifications.slice(0, 50).map(n => {
+    // Clear and rebuild notification list using DOM methods
+    list.textContent = '';
+    notifications.slice(0, 50).forEach(n => {
       const d = describeNotif(n);
-      const safeHandle = escapeHtml(d.firstHandle);
-      const safeWho = escapeHtml(d.who);
-      const safeText = escapeHtml(d.text);
-      const avatarHtml = d.avatar
-        ? `<a href="https://suno.com/@${safeHandle}" target="_blank"><img class="bettersuno-avatar" src="${escapeAttr(d.avatar)}"></a>`
-        : '';
-      const contentImgHtml = d.contentImg
-        ? `<a href="${escapeAttr(d.url)}" target="_blank"><img class="bettersuno-content-img" src="${escapeAttr(d.contentImg)}"></a>`
-        : '';
-
-      return `
-        <div class="bettersuno-item">
-          ${avatarHtml}
-          <div class="bettersuno-body">
-            <div class="bettersuno-text">
-              <a href="https://suno.com/@${safeHandle}" target="_blank">${safeWho}</a>
-              ${safeText}
-            </div>
-            <div class="bettersuno-time">${formatAgo(d.ts)}</div>
-          </div>
-          ${contentImgHtml}
-        </div>
-      `;
-    }).join('');
-
-    list.innerHTML = html;
+      
+      const itemDiv = document.createElement('div');
+      itemDiv.className = 'bettersuno-item';
+      
+      // Avatar
+      if (d.avatar) {
+        const avatarLink = document.createElement('a');
+        avatarLink.href = `https://suno.com/@${d.firstHandle}`;
+        avatarLink.target = '_blank';
+        const avatarImg = document.createElement('img');
+        avatarImg.className = 'bettersuno-avatar';
+        avatarImg.src = d.avatar;
+        avatarLink.appendChild(avatarImg);
+        itemDiv.appendChild(avatarLink);
+      }
+      
+      // Body
+      const bodyDiv = document.createElement('div');
+      bodyDiv.className = 'bettersuno-body';
+      
+      const textDiv = document.createElement('div');
+      textDiv.className = 'bettersuno-text';
+      
+      const whoLink = document.createElement('a');
+      whoLink.href = `https://suno.com/@${d.firstHandle}`;
+      whoLink.target = '_blank';
+      whoLink.textContent = d.who;
+      textDiv.appendChild(whoLink);
+      
+      textDiv.appendChild(document.createTextNode(' ' + d.text));
+      
+      const timeDiv = document.createElement('div');
+      timeDiv.className = 'bettersuno-time';
+      timeDiv.textContent = formatAgo(d.ts);
+      
+      bodyDiv.appendChild(textDiv);
+      bodyDiv.appendChild(timeDiv);
+      itemDiv.appendChild(bodyDiv);
+      
+      // Content image
+      if (d.contentImg) {
+        const imgLink = document.createElement('a');
+        imgLink.href = d.url;
+        imgLink.target = '_blank';
+        const contentImg = document.createElement('img');
+        contentImg.className = 'bettersuno-content-img';
+        contentImg.src = d.contentImg;
+        imgLink.appendChild(contentImg);
+        itemDiv.appendChild(imgLink);
+      }
+      
+      list.appendChild(itemDiv);
+    });
   }
 
   // ---- Guard: detect invalidated extension context ----

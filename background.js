@@ -27,6 +27,9 @@ setInterval(() => {
   log("heartbeat");
 }, 60000);
 
+// Browser detection: Firefox uses persistent background scripts instead of service workers
+const isFirefox = typeof browser !== 'undefined' && !!browser.runtime?.getBrowserInfo;
+
 const tabState = {};
 const DEFAULT_INTERVAL_MS = 120000;
 
@@ -321,6 +324,8 @@ chrome.alarms.create('keepAlive', {
 // ============================================================================
 
 async function fetchTokenDirect(tabId) {
+  // Firefox doesn't support world: "MAIN" in executeScript
+  if (isFirefox) return null;
   if (typeof tabId !== 'number' || isNaN(tabId)) return null;
   try {
     const results = await chrome.scripting.executeScript({
@@ -406,6 +411,9 @@ async function ensureValidToken(tabId) {
 // ============================================================================
 
 async function ensureOffscreen() {
+  // Firefox doesn't have/need the offscreen API — polling runs inline
+  if (isFirefox) return;
+
   // Quick return if we already know it exists
   if (offscreenExists) {
     return;
@@ -457,6 +465,11 @@ async function ensureOffscreen() {
  * If the offscreen document is not available, marks it for recreation
  */
 async function sendToOffscreen(message) {
+  if (isFirefox) {
+    ffHandleMessage(message);
+    return;
+  }
+
   try {
     await chrome.runtime.sendMessage(message);
   } catch (err) {
@@ -470,6 +483,149 @@ async function sendToOffscreen(message) {
     } else {
       log("⚠ Error sending to offscreen:", err.message);
     }
+  }
+}
+
+// ============================================================================
+// Firefox Direct Polling (replaces offscreen document on Firefox)
+// Firefox background scripts are persistent, so we can poll directly here
+// instead of using Chrome's offscreen document workaround.
+// ============================================================================
+
+const ffPollers = {};        // tabId → intervalId
+const ffStates = {};         // tabId → polling state
+const ffLastRequestAt = {};  // tabId → last request timestamp (ms)
+let ffLastRequestAtAll = 0;  // global last request timestamp (ms)
+
+async function ffPollOnce(tabId) {
+  const st = ffStates[tabId];
+  if (!st || !st.enabled) return;
+
+  const token = await ensureValidToken(tabId);
+  if (!token) {
+    log("ffPollOnce: no token for tab", tabId);
+    const tst = ensureTabState(tabId);
+    tst.token = null;
+    tst.tokenTimestamp = null;
+    return;
+  }
+
+  if (st.token !== token) {
+    st.token = token;
+    st.tokenTimestamp = Date.now();
+    st.requestCount = 0;
+  }
+
+  const afterUtc = st.lastNotificationTime ?? st.initialAfterUtc;
+  if (!afterUtc) return;
+
+  const now = Date.now();
+
+  // Per-tab burst prevention (50% of interval)
+  const lastTab = ffLastRequestAt[tabId] || 0;
+  if (lastTab && (now - lastTab) < (st.intervalMs * 0.5)) return;
+  ffLastRequestAt[tabId] = now;
+
+  // Global burst prevention (70% of interval, min 8s)
+  let intMs = Math.round(st.intervalMs * 0.7);
+  if (intMs < 8000) intMs = 8000;
+  if (ffLastRequestAtAll && (now - ffLastRequestAtAll) < intMs) return;
+  ffLastRequestAtAll = now;
+
+  let url = "https://studio-api.prod.suno.com/api/notification/v2";
+  url += `?after_datetime_utc=${encodeURIComponent(afterUtc)}`;
+
+  st.totalRequests++;
+  st.lastRequestTime = new Date().toISOString();
+
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: "Bearer " + token }
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      log("ffPollOnce: 401/403 → token expired for tab", tabId);
+      const tst = ensureTabState(tabId);
+      tst.token = null;
+      tst.tokenTimestamp = null;
+      return;
+    }
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (data.notifications?.length) {
+      st.lastNotificationTime = data.notified_at;
+      st.notifications.unshift(...data.notifications);
+      st.notifications.sort((a, b) => {
+        const ta = new Date(a.updated_at || a.notified_at || a.created_at || 0).getTime();
+        const tb = new Date(b.updated_at || b.notified_at || b.created_at || 0).getTime();
+        return tb - ta;
+      });
+      await fetch("https://studio-api.prod.suno.com/api/notification/v2/read", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          all: true,
+          before_datetime_utc: data.notified_at
+        })
+      });
+    }
+    st.requestCount++;
+  } catch (e) {
+    st.lastError = String(e);
+  }
+
+  // Update main tab state and broadcast to UI
+  const mainState = ensureTabState(tabId);
+  Object.assign(mainState, st);
+  showDesktopNotifications(tabId, mainState);
+  saveState();
+
+  try {
+    chrome.runtime.sendMessage({
+      type: "stateUpdate",
+      tabId,
+      state: { ...mainState }
+    });
+  } catch (e) {
+    // No listeners, ignore
+  }
+}
+
+function ffRestartPolling(tabId) {
+  const st = ffStates[tabId];
+  if (!st) return;
+
+  if (ffPollers[tabId]) {
+    clearInterval(ffPollers[tabId]);
+    delete ffPollers[tabId];
+  }
+  if (!st.enabled) return;
+
+  ffPollers[tabId] = setInterval(() => ffPollOnce(tabId), st.intervalMs);
+  ffPollOnce(tabId);
+}
+
+function ffClearTab(tabId) {
+  if (ffPollers[tabId]) {
+    clearInterval(ffPollers[tabId]);
+    delete ffPollers[tabId];
+  }
+  delete ffStates[tabId];
+}
+
+function ffHandleMessage(msg) {
+  if (msg.type === "offscreenSetState") {
+    ffStates[msg.tabId] = msg.state;
+    ffRestartPolling(msg.tabId);
+    return;
+  }
+  if (msg.type === "offscreenClearTab") {
+    ffClearTab(msg.tabId);
+    return;
   }
 }
 
@@ -761,6 +917,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "pingMainWorld") {
+    if (isFirefox) {
+      sendResponse({ ok: false, reason: "not-supported-firefox" });
+      return true;
+    }
     const activeTabId = Object.keys(tabState).find(id => tabState[id].enabled && !isNaN(Number(id)));
     if (!activeTabId) {
       log("pingMainWorld → no active tab");
@@ -1012,7 +1172,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener(tabId => {
   log("tab removed", tabId);
   if (tabState[tabId]) {
-    chrome.runtime.sendMessage({ type: "offscreenClearTab", tabId });
+    if (isFirefox) {
+      ffClearTab(tabId);
+    } else {
+      chrome.runtime.sendMessage({ type: "offscreenClearTab", tabId });
+    }
     delete tabState[tabId];
   }
 });
@@ -1544,20 +1708,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-// Handle offscreen document connection/disconnection
-try {
-  chrome.runtime.onConnect.addListener((port) => {
-    if (port.name === 'offscreen-document') {
-      log("\u2713 Offscreen document connected");
-      offscreenExists = true;
-      
-      port.onDisconnect.addListener(() => {
-        log("\u26a0 Offscreen document disconnected");
-        offscreenExists = false;
-        offscreenCreating = false;
-      });
-    }
-  });
-} catch (e) {
-  log("Note: onConnect listener failed (may not be available)");
+// Handle offscreen document connection/disconnection (Chrome only)
+if (!isFirefox) {
+  try {
+    chrome.runtime.onConnect.addListener((port) => {
+      if (port.name === 'offscreen-document') {
+        log("\u2713 Offscreen document connected");
+        offscreenExists = true;
+        
+        port.onDisconnect.addListener(() => {
+          log("\u26a0 Offscreen document disconnected");
+          offscreenExists = false;
+          offscreenCreating = false;
+        });
+      }
+    });
+  } catch (e) {
+    log("Note: onConnect listener failed (may not be available)");
+  }
 }

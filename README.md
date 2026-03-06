@@ -1,97 +1,70 @@
 # BetterSuno
 
-BetterSuno is a Chrome/Chromium extension that enhances the Suno.com experience with:
-
-- In-page floating notification bell and panel
-- Live notification updates and desktop notifications
-- Song library fetching from Suno
-- Bulk download support (MP3/WAV, lyrics, and images)
-- Filtering, selection, and persistent local state
+Enhance your Suno.com experience with real-time notifications and powerful song management tools.
 
 ## Features
 
-- Notifications tab
-- Shows latest notifications from Suno in a floating panel
-- Badge count for unseen notifications
-- Optional desktop notifications
+### 🔔 Notifications
+- **Live updates** - See your latest Suno notifications in real-time without grouping of similar events
+- **Desktop alerts** - Get notified when someone likes or comments on your songs
 
-- Download Songs tab
-- Fetch songs from your Suno account
-- Filter by text, liked, stems, and public/private
-- Default sort by date (newest first)
-- Bulk download selected songs
-- Download options:
-  - Music (`mp3` or `wav`)
-  - Lyrics
-  - Cover image
+### 🎵 Song Batch Download
+- **Browse your library** - View all your Suno creations in one place
+- **Bulk downloads** - Download multiple songs at once in MP3 or WAV format
+- **Complete packages** - Include lyrics and cover images with your downloads
+- **Smart filtering** - Filter by liked songs, public/private, or search by text
 
-- Settings tab
-- Polling interval configuration
-- Desktop notification toggle
-- Download folder preference
-- Manual "Fetch Songs" action
-- **Stop Fetch** button in Settings (warns that song list may be incomplete if stopped early)
+### ⚙️ Settings
+- **Customizable polling** - Choose how often to check for new notifications
 
-## Installation (Developer Mode)
+## Installation
 
-1. Open your browser and go to `chrome://extensions`.
-2. Enable **Developer mode**.
-3. Click **Load unpacked**.
-4. Select this folder:
-   - `/home/christoph/Downloads/BetterSunoications`
-5. Open `https://suno.com` and log in.
+### Chrome / Edge / Brave
+1. Download and extract this extension
+2. Open `chrome://extensions` in your browser
+3. Enable **Developer mode** (toggle in top-right)
+4. Click **Load unpacked** and select the `dist/chrome/` folder
+5. Visit [suno.com](https://suno.com) and look for the notification bell icon
 
-The extension injects its UI directly into Suno pages.
+### Firefox
+1. Download and extract this extension
+2. Open `about:debugging#/runtime/this-firefox` in Firefox
+3. Click **Load Temporary Add-on**
+4. Select the `manifest.json` file from the `dist/firefox/` folder
+5. Visit [suno.com](https://suno.com) and look for the notification bell icon
 
-## Project Structure
+## How to Use
 
-- `manifest.json` - Extension manifest (MV3)
-- `background.js` - Service worker, state, notifications, fetch/download orchestration
-- `content.js` - Floating bell/panel and settings/notifications UI
-- `downloader.js` - Song list, filtering, sorting, and download actions
-- `content-fetcher.js` - In-page fetch helper logic
-- `content.css` - Injected UI styles
-- `idb-store.js` - IndexedDB storage helpers
-- `offscreen.html`, `offscreen.js` - Offscreen document support
-- `icons/` - Extension icons
+1. **Open Suno.com** and log in to your account
+2. **Click the bell icon** in the bottom-right corner to open the panel
+3. **Switch tabs** to view Notifications, Download Songs, or Settings
+4. **Download songs** by clicking "Fetch Songs", selecting tracks, and clicking "Download Selected"
 
-## Permissions Used
+## Building from Source
 
-From `manifest.json`:
+```bash
+npm run build
+```
 
-- `cookies` - Access auth/session cookies needed for Suno API flow
-- `alarms` - Scheduled polling
-- `scripting` - Injecting/communicating with page context
-- `tabs` - Tab targeting and active tab checks
-- `offscreen` - Offscreen document support
-- `storage` - Persistent extension state
-- `notifications` - Desktop notifications
-- `downloads` - File download handling
+This creates browser-specific builds in `dist/chrome/` and `dist/firefox/`.
 
-Host permissions:
+## Support
 
-- `https://suno.com/*`
-- `https://clerk.suno.com/*`
-- `https://api.suno.com/*`
-- `https://studio-api.prod.suno.com/*`
+If you encounter issues:
+- Refresh the Suno.com page
+- Reload the extension in your browser's extension manager
+- Make sure you're logged in to Suno.com
 
-## Development Notes
+For bugs or feature requests, please open an issue on GitHub.
 
-- Manifest version: `3`
-- Extension version: `2.0.0`
-- Main UI is content-script based and runs on Suno pages.
+## Privacy
 
-## Troubleshooting
-
-- "Could not establish connection. Receiving end does not exist."
-  - Reload the extension in `chrome://extensions`
-  - Refresh Suno tabs
-  - Ensure Suno is open and you are logged in
-
-- Song fetch fails
-  - Ensure `https://suno.com` is open in an active tab
-  - Confirm your session is valid (log out/in if needed)
+BetterSuno operates entirely locally in your browser. No data is collected or transmitted to third parties. The extension only communicates with Suno's official APIs using your existing session.
 
 ## Disclaimer
 
 This project is an independent enhancement for Suno users and is not affiliated with or endorsed by Suno.
+We respect Suno's terms of service and do not engage in any unauthorized access, downloading, or distribution of copyrighted content. 
+The extension is designed to work with the public APIs and interfaces provided by Suno and operates within the permissions granted by the user. 
+Users are responsible for ensuring their use of the extension complies with Suno's terms of service and applicable laws.
+Use this extension at your own risk. The developers are not liable for any issues arising from its use.

@@ -771,7 +771,7 @@
             const playBtn = document.createElement("button");
             playBtn.className = "song-action-btn play-btn";
             playBtn.title = "Play Song";
-            playBtn.innerHTML = (currentPlayingSongId === song.id && !audioElement.paused) ? '⏸' : '▶';
+            playBtn.textContent = (currentPlayingSongId === song.id && !audioElement.paused) ? '⏸' : '▶';
             playBtn.onclick = (e) => {
                 e.stopPropagation();
                 togglePlay(song);

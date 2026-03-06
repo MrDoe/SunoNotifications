@@ -1,4 +1,10 @@
 {
+  "name": "bettersuno",
+  "version": "2.0.0",
+  "description": "Enhanced Suno.com experience with notifications and song downloads",
+  "scripts": {
+    "build": "node build.js"
+  },
   "dependencies": {
     "eslint": "^10.0.2"
   }
