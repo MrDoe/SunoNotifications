@@ -65,7 +65,7 @@
     {
       "label": "Build & Sign Firefox",
       "type": "shell",
-      "command": "node build.js firefox && npx web-ext sign --source-dir dist/firefox/ --artifacts-dir dist/artifacts/firefox/ --channel unlisted --api-key ${input:amoApiKey} --api-secret ${input:amoApiSecret}",
+      "command": "node build.js firefox && npx web-ext sign --source-dir dist/firefox/ --artifacts-dir dist/artifacts/firefox/ --channel listed --api-key ${input:amoApiKey} --api-secret ${input:amoApiSecret}",
       "problemMatcher": [],
       "detail": "Build, sign and package Firefox extension via AMO API"
     },
