@@ -324,7 +324,7 @@
     function setCachingUiState(active) {
         if (cacheAllBtn) {
             cacheAllBtn.disabled = active;
-            cacheAllBtn.textContent = active ? 'Caching...' : '💾 Cache All Songs';
+            cacheAllBtn.textContent = active ? 'Downloading to DB...' : '💾 Download to DB';
         }
         if (stopCacheBtn) {
             stopCacheBtn.classList.toggle('hidden', !active);
@@ -581,9 +581,16 @@
             return;
         }
 
-        const songsToCache = allSongs.filter(s => s.audio_url && !cachedSongIds.has(s.id));
+        const selectedIds = getSelectedSongIds();
+        if (selectedIds.length === 0) {
+            statusDiv.innerText = "No songs selected!";
+            return;
+        }
+
+        const selectedSongs = allSongs.filter(s => selectedIds.includes(s.id));
+        const songsToCache = selectedSongs.filter(s => s.audio_url && !cachedSongIds.has(s.id));
         if (songsToCache.length === 0) {
-            statusDiv.innerText = `All ${allSongs.length} songs are already cached in the browser.`;
+            statusDiv.innerText = `All ${selectedSongs.length} selected song(s) are already in the browser database.`;
             return;
         }
 
@@ -597,11 +604,11 @@
 
         for (const song of songsToCache) {
             if (stopCachingRequested) {
-                statusDiv.innerText = `⏹️ Caching stopped. ${cached} song(s) cached.`;
+                statusDiv.innerText = `⏹️ Download to DB stopped. ${cached} song(s) saved.`;
                 break;
             }
 
-            statusDiv.innerText = `💾 Caching ${cached + failed + 1}/${total}: ${song.title || 'Untitled'}...`;
+            statusDiv.innerText = `💾 Downloading to DB ${cached + failed + 1}/${total}: ${song.title || 'Untitled'}...`;
 
             try {
                 const response = await fetch(song.audio_url);
@@ -621,7 +628,7 @@
 
         if (!stopCachingRequested) {
             const totalCached = cachedSongIds.size;
-            statusDiv.innerText = `✅ Caching complete! ${cached} new, ${totalCached} total in browser. ${failed > 0 ? `${failed} failed.` : ''}`.trim();
+            statusDiv.innerText = `✅ Download to DB complete! ${cached} new, ${totalCached} total in browser database. ${failed > 0 ? `${failed} failed.` : ''}`.trim();
         }
 
         renderSongList();

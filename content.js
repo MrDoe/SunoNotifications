@@ -86,7 +86,7 @@
               <button id="stopDownloadBtn" class="btn-stop hidden">Stop</button>
             </div>
             <div class="btn-row" style="margin-top: 4px;">
-              <button id="cacheAllBtn" class="btn-secondary" style="flex: 2" title="Download all songs as MP3 into the browser database for offline playback">💾 Cache All Songs</button>
+              <button id="cacheAllBtn" class="btn-secondary" style="flex: 2" title="Download selected songs as MP3 into the browser database for offline playback">💾 Download to DB</button>
               <button id="stopCacheBtn" class="btn-stop hidden">Stop</button>
             </div>
           </div>
