@@ -89,6 +89,15 @@
               <button id="cacheAllBtn" class="btn-secondary" style="flex: 2" title="Download selected songs as MP3 into the browser database for offline playback">💾 Download to DB</button>
               <button id="stopCacheBtn" class="btn-stop hidden">Stop</button>
             </div>
+            <div id="dbDownloadProgress" class="db-download-progress hidden" aria-live="polite">
+              <div class="db-download-progress-label">
+                <span id="dbDownloadProgressText">0 / 0</span>
+                <span id="dbDownloadProgressPercent">0%</span>
+              </div>
+              <div class="db-download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="dbDownloadProgressBar" class="db-download-progress-fill"></div>
+              </div>
+            </div>
           </div>
 
           <div id="bettersuno-mini-player" class="mini-player" style="display: none;">

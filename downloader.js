@@ -310,6 +310,11 @@
     const songCount = document.getElementById("songCount");
     const songListContainer = document.getElementById("songListContainer");
     const versionFooter = document.getElementById("versionFooter");
+    const dbDownloadProgress = document.getElementById("dbDownloadProgress");
+    const dbDownloadProgressBar = document.getElementById("dbDownloadProgressBar");
+    const dbDownloadProgressText = document.getElementById("dbDownloadProgressText");
+    const dbDownloadProgressPercent = document.getElementById("dbDownloadProgressPercent");
+    const dbDownloadProgressTrack = dbDownloadProgress?.querySelector('[role="progressbar"]');
 
     // hide stop-fetch button initially
     if (stopFetchBtn) {
@@ -328,8 +333,27 @@
             cacheAllBtn.textContent = active ? 'Downloading to DB...' : '💾 Download to DB';
         }
         if (stopCacheBtn) {
+            stopCacheBtn.disabled = false;
             stopCacheBtn.classList.toggle('hidden', !active);
         }
+    }
+
+    function setDbDownloadProgress(visible, completed = 0, total = 0) {
+        if (!dbDownloadProgress || !dbDownloadProgressBar || !dbDownloadProgressText || !dbDownloadProgressPercent || !dbDownloadProgressTrack) {
+            return;
+        }
+
+        dbDownloadProgress.classList.toggle('hidden', !visible);
+
+        const safeTotal = Math.max(total, 0);
+        const safeCompleted = Math.min(Math.max(completed, 0), safeTotal || 0);
+        const percent = safeTotal > 0 ? Math.round((safeCompleted / safeTotal) * 100) : 0;
+
+        dbDownloadProgressText.textContent = `${safeCompleted} / ${safeTotal}`;
+        dbDownloadProgressPercent.textContent = `${percent}%`;
+        dbDownloadProgressBar.style.width = `${percent}%`;
+        dbDownloadProgressTrack.setAttribute('aria-valuemax', String(safeTotal || 100));
+        dbDownloadProgressTrack.setAttribute('aria-valuenow', String(safeCompleted));
     }
 
     try {
@@ -579,12 +603,14 @@
 
     async function cacheAllSongs() {
         if (allSongs.length === 0) {
+            setDbDownloadProgress(false);
             statusDiv.innerText = "No songs to cache. Fetch your song list first.";
             return;
         }
 
         const selectedIds = getSelectedSongIds();
         if (selectedIds.length === 0) {
+            setDbDownloadProgress(false);
             statusDiv.innerText = "No songs selected!";
             return;
         }
@@ -592,6 +618,7 @@
         const selectedSongs = allSongs.filter(s => selectedIds.includes(s.id));
         const songsToCache = selectedSongs.filter(s => s.audio_url && !cachedSongIds.has(s.id));
         if (songsToCache.length === 0) {
+            setDbDownloadProgress(false);
             statusDiv.innerText = `All ${selectedSongs.length} selected song(s) are already in the browser database.`;
             return;
         }
@@ -603,9 +630,11 @@
         let cached = 0;
         let failed = 0;
         const total = songsToCache.length;
+        setDbDownloadProgress(true, 0, total);
 
         for (const song of songsToCache) {
             if (stopCachingRequested) {
+                setDbDownloadProgress(true, cached + failed, total);
                 statusDiv.innerText = `⏹️ Download to DB stopped. ${cached} song(s) saved.`;
                 break;
             }
@@ -622,6 +651,8 @@
             } catch (e) {
                 failed++;
                 console.error(`[Downloader] Failed to cache "${song.title}":`, e);
+            } finally {
+                setDbDownloadProgress(true, cached + failed, total);
             }
         }
 
@@ -630,6 +661,7 @@
 
         if (!stopCachingRequested) {
             const totalCached = cachedSongIds.size;
+            setDbDownloadProgress(true, total, total);
             statusDiv.innerText = `✅ Download to DB complete! ${cached} new, ${totalCached} total in browser database. ${failed > 0 ? `${failed} failed.` : ''}`.trim();
         }
 

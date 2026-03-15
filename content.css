@@ -658,6 +658,37 @@
   flex: 1 !important;
 }
 
+#bettersuno-panel .db-download-progress {
+  margin-top: 8px !important;
+}
+
+#bettersuno-panel .db-download-progress-label {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  margin-bottom: 6px !important;
+  font-size: 11px !important;
+  color: #d4d4d8 !important;
+}
+
+#bettersuno-panel .db-download-progress-track {
+  width: 100% !important;
+  height: 8px !important;
+  overflow: hidden !important;
+  border-radius: 999px !important;
+  background: #111113 !important;
+  border: 1px solid #3f3f46 !important;
+  box-sizing: border-box !important;
+}
+
+#bettersuno-panel .db-download-progress-fill {
+  width: 0% !important;
+  height: 100% !important;
+  border-radius: inherit !important;
+  background: linear-gradient(90deg, #22c55e 0%, #06b6d4 100%) !important;
+  transition: width 0.18s ease !important;
+}
+
 #bettersuno-panel .hidden {
   display: none !important;
 }
