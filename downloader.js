@@ -7,6 +7,7 @@
 
     let allSongs = [];
     let filteredSongs = [];
+    let selectedSongIds = new Set();
     let currentPlayingSongId = null;
     let cachedSongIds = new Set();
     let currentBlobUrl = null;
@@ -548,9 +549,10 @@
             
             if (liked !== null) filterLiked.checked = liked;
             if (stems !== null) filterStems.checked = stems;
-            if (pub !== null) filterPublic.checked = pub;
+            filterPublic.checked = (pub !== null) ? pub : true;
         } catch (e) {
             console.error('Failed to load filter preferences:', e);
+            filterPublic.checked = true;
         }
     }
 
@@ -658,7 +660,14 @@
     // Select all checkbox
     selectAllCheckbox.addEventListener("change", () => {
         const checkboxes = songList.querySelectorAll('input[type="checkbox"]');
-        checkboxes.forEach(cb => cb.checked = selectAllCheckbox.checked);
+        checkboxes.forEach(cb => {
+            cb.checked = selectAllCheckbox.checked;
+            if (selectAllCheckbox.checked) {
+                selectedSongIds.add(cb.dataset.id);
+            } else {
+                selectedSongIds.delete(cb.dataset.id);
+            }
+        });
         updateSelectedCount();
     });
 
@@ -883,8 +892,15 @@
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
             checkbox.dataset.id = song.id;
-            checkbox.checked = true;
-            checkbox.addEventListener("change", updateSelectedCount);
+            checkbox.checked = selectedSongIds.has(song.id);
+            checkbox.addEventListener("change", () => {
+                if (checkbox.checked) {
+                    selectedSongIds.add(song.id);
+                } else {
+                    selectedSongIds.delete(song.id);
+                }
+                updateSelectedCount();
+            });
 
             const songInfo = document.createElement("div");
             songInfo.className = "song-info";
@@ -972,8 +988,7 @@
     }
 
     function getSelectedSongIds() {
-        const checkboxes = songList.querySelectorAll('input[type="checkbox"]:checked');
-        return Array.from(checkboxes).map(cb => cb.dataset.id);
+        return Array.from(selectedSongIds).filter(id => allSongs.some(song => song.id === id));
     }
 
     function getDownloadOptions() {
@@ -986,12 +1001,11 @@
 
     function updateSelectedCount() {
         const total = filteredSongs.length;
-        const selected = getSelectedSongIds().length;
+        const selected = filteredSongs.filter(song => selectedSongIds.has(song.id)).length;
         songCount.textContent = `${selected}/${total} selected`;
 
         // Update select all checkbox state
-        const allChecked = songList.querySelectorAll('input[type="checkbox"]').length ===
-                          songList.querySelectorAll('input[type="checkbox"]:checked').length;
+        const allChecked = total > 0 && filteredSongs.every(song => selectedSongIds.has(song.id));
         selectAllCheckbox.checked = allChecked && total > 0;
     }
 

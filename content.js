@@ -66,7 +66,7 @@
                 <input type="checkbox" id="filterStems" /> 🎹 Stems
               </label>
               <label class="checkbox-label" style="margin: 0; padding: 0">
-                <input type="checkbox" id="filterPublic" /> 🌐 Public
+                <input type="checkbox" id="filterPublic" checked /> 🌐 Public
               </label>
             </div>
 
