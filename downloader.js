@@ -18,6 +18,22 @@
     let renderedSongCount = 0;
     let songListSentinel = null;
     let songListObserver = null;
+    const SYNC_META_KEY = 'sunoSyncMeta';
+    let currentFetchMode = 'idle';
+    let syncMeta = createDefaultSyncMeta();
+
+    function createDefaultSyncMeta() {
+        return {
+            lastSyncAt: null,
+            lastFullSyncAt: null,
+            lastIncrementalSyncAt: null,
+            lastSyncMode: null,
+            lastAddedCount: 0,
+            totalSongsAtLastSync: 0,
+            lastError: null,
+            syncStatus: 'idle'
+        };
+    }
 
     // ========================================================================
     // Audio Player
@@ -114,6 +130,7 @@
     const IDB_NAME = 'BetterSunoicationsDB';
     const IDB_VERSION = 2;
     let dbInstance = null;
+    const textEncoder = new TextEncoder();
 
     async function getDB() {
         if (dbInstance) return dbInstance;
@@ -299,6 +316,105 @@
         }
     }
 
+    async function getAllRecordsFromStore(storeName) {
+        try {
+            const db = await getDB();
+            const tx = db.transaction(storeName, 'readonly');
+            const store = tx.objectStore(storeName);
+            const request = store.getAll();
+
+            return new Promise((resolve, reject) => {
+                request.onsuccess = () => resolve(request.result || []);
+                request.onerror = () => reject(request.error);
+            });
+        } catch (e) {
+            console.error(`[IDB] Failed to read store ${storeName}:`, e);
+            return [];
+        }
+    }
+
+    function estimateValueSize(value, visited = new WeakSet()) {
+        if (value == null) {
+            return 0;
+        }
+
+        if (typeof Blob !== 'undefined' && value instanceof Blob) {
+            return value.size;
+        }
+
+        if (typeof value === 'string') {
+            return textEncoder.encode(value).length;
+        }
+
+        if (typeof value === 'number') {
+            return 8;
+        }
+
+        if (typeof value === 'boolean') {
+            return 4;
+        }
+
+        if (value instanceof Date) {
+            return 8;
+        }
+
+        if (value instanceof ArrayBuffer) {
+            return value.byteLength;
+        }
+
+        if (ArrayBuffer.isView(value)) {
+            return value.byteLength;
+        }
+
+        if (Array.isArray(value)) {
+            return value.reduce((total, item) => total + estimateValueSize(item, visited), 0);
+        }
+
+        if (typeof value === 'object') {
+            if (visited.has(value)) {
+                return 0;
+            }
+            visited.add(value);
+
+            let total = 0;
+            for (const [key, nestedValue] of Object.entries(value)) {
+                total += textEncoder.encode(key).length;
+                total += estimateValueSize(nestedValue, visited);
+            }
+            return total;
+        }
+
+        return 0;
+    }
+
+    function formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) {
+            return '0 B';
+        }
+
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let value = bytes;
+        let unitIndex = 0;
+
+        while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex += 1;
+        }
+
+        const rounded = value >= 100 || unitIndex === 0 ? Math.round(value) : value.toFixed(1);
+        return `${rounded} ${units[unitIndex]}`;
+    }
+
+    async function estimateDbUsageBytes() {
+        const [songs, preferences, audioCache] = await Promise.all([
+            getAllRecordsFromStore('songsList'),
+            getAllRecordsFromStore('userPreferences'),
+            getAllRecordsFromStore('audioCache')
+        ]);
+
+        return estimateValueSize(songs) + estimateValueSize(preferences) + estimateValueSize(audioCache);
+    }
+
     // ========================================================================
     // DOM Elements
     // ========================================================================
@@ -320,11 +436,14 @@
     const cacheAllBtn = document.getElementById("cacheAllBtn");
     const stopCacheBtn = document.getElementById("stopCacheBtn");
     const deleteCachedBtn = document.getElementById("deleteCachedBtn");
+    const dbUsageValue = document.getElementById("bettersuno-db-usage");
     const filterInput = document.getElementById("filterInput");
     const filterLiked = document.getElementById("filterLiked");
     const filterStems = document.getElementById("filterStems");
     const filterPublic = document.getElementById("filterPublic");
+    const filterOffline = document.getElementById("filterOffline");
     const selectAllButton = document.getElementById("selectAll");
+    const syncNewBtn = document.getElementById("syncNewBtn");
     const downloadMusicCheckbox = document.getElementById("downloadMusic");
     const downloadLyricsCheckbox = document.getElementById("downloadLyrics");
     const downloadImageCheckbox = document.getElementById("downloadImage");
@@ -332,11 +451,6 @@
     const songCount = document.getElementById("songCount");
     const songListContainer = document.getElementById("songListContainer");
     const versionFooter = document.getElementById("versionFooter");
-    const dbDownloadProgress = document.getElementById("dbDownloadProgress");
-    const dbDownloadProgressBar = document.getElementById("dbDownloadProgressBar");
-    const dbDownloadProgressText = document.getElementById("dbDownloadProgressText");
-    const dbDownloadProgressPercent = document.getElementById("dbDownloadProgressPercent");
-    const dbDownloadProgressTrack = dbDownloadProgress?.querySelector('[role="progressbar"]');
 
     // hide stop-fetch button initially
     if (stopFetchBtn) {
@@ -346,6 +460,67 @@
     function setFetchUiState(active) {
         if (stopFetchBtn) {
             stopFetchBtn.style.display = active ? 'inline-block' : 'none';
+        }
+        if (syncNewBtn) {
+            syncNewBtn.disabled = active;
+            syncNewBtn.textContent = active && currentFetchMode === 'incremental' ? 'Syncing...' : 'Sync New';
+        }
+    }
+
+    function formatRelativeTime(value) {
+        if (!value) {
+            return 'never';
+        }
+
+        const ts = typeof value === 'number' ? value : Date.parse(value);
+        if (!Number.isFinite(ts)) {
+            return 'unknown';
+        }
+
+        const diffMs = Date.now() - ts;
+        const diffMinutes = Math.round(diffMs / 60000);
+        if (diffMinutes <= 1) return 'just now';
+        if (diffMinutes < 60) return `${diffMinutes}m ago`;
+
+        const diffHours = Math.round(diffMinutes / 60);
+        if (diffHours < 24) return `${diffHours}h ago`;
+
+        const diffDays = Math.round(diffHours / 24);
+        if (diffDays < 7) return `${diffDays}d ago`;
+
+        try {
+            return new Date(ts).toLocaleDateString();
+        } catch {
+            return 'unknown';
+        }
+    }
+
+    async function refreshDbUsageDisplay() {
+        if (!dbUsageValue) {
+            return;
+        }
+
+        dbUsageValue.textContent = 'Calculating...';
+        try {
+            const bytes = await estimateDbUsageBytes();
+            dbUsageValue.textContent = `${formatBytes(bytes)} used locally`;
+            dbUsageValue.title = `Approximate IndexedDB usage for BetterSuno: ${bytes.toLocaleString()} bytes`;
+        } catch (e) {
+            dbUsageValue.textContent = 'Unavailable';
+            dbUsageValue.title = e?.message || 'Failed to measure IndexedDB usage';
+        }
+    }
+
+    async function saveSyncMeta(patch = {}) {
+        syncMeta = {
+            ...syncMeta,
+            ...patch
+        };
+        try {
+            await savePreferenceToIDB(SYNC_META_KEY, syncMeta);
+            void refreshDbUsageDisplay();
+        } catch (e) {
+            console.error('[Downloader] Failed to save sync metadata:', e);
         }
     }
 
@@ -360,23 +535,7 @@
         }
     }
 
-    function setDbDownloadProgress(visible, completed = 0, total = 0) {
-        if (!dbDownloadProgress || !dbDownloadProgressBar || !dbDownloadProgressText || !dbDownloadProgressPercent || !dbDownloadProgressTrack) {
-            return;
-        }
 
-        dbDownloadProgress.classList.toggle('hidden', !visible);
-
-        const safeTotal = Math.max(total, 0);
-        const safeCompleted = Math.min(Math.max(completed, 0), safeTotal || 0);
-        const percent = safeTotal > 0 ? Math.round((safeCompleted / safeTotal) * 100) : 0;
-
-        dbDownloadProgressText.textContent = `${safeCompleted} / ${safeTotal}`;
-        dbDownloadProgressPercent.textContent = `${percent}%`;
-        dbDownloadProgressBar.style.width = `${percent}%`;
-        dbDownloadProgressTrack.setAttribute('aria-valuemax', String(safeTotal || 100));
-        dbDownloadProgressTrack.setAttribute('aria-valuenow', String(safeCompleted));
-    }
 
     try {
         const version = api.runtime.getManifest()?.version;
@@ -424,7 +583,9 @@
         try {
             const response = await api.runtime.sendMessage({ action: "get_fetch_state" });
             if (response && response.isFetching) {
+                currentFetchMode = syncMeta.lastSyncMode || 'incremental';
                 statusDiv.innerText = "Fetching in progress...";
+                setFetchUiState(true);
             }
         } catch (e) {
             // Ignore errors (e.g., no response)
@@ -432,16 +593,33 @@
     }
 
     function startAutoFetch() {
-        // confirm before fetching entire list
-        const proceed = confirm("BetterSuno will fetch your complete song list from Suno. It may take some time. Continue?");
-        if (!proceed) {
-            statusDiv.innerText = "Fetch cancelled.";
-            console.log('[Downloader] User cancelled song list fetch');
+        startFullRefresh({ confirmUser: true });
+    }
+
+    function startFullRefresh(options = {}) {
+        const { confirmUser = true } = options;
+        if (currentFetchMode !== 'idle') {
             return;
         }
 
-        statusDiv.innerText = "Fetching songs...";
-        console.log('[Downloader] Starting auto fetch...');
+        if (confirmUser) {
+            const proceed = confirm("BetterSuno will reload your full Suno library. This may take a while. Continue?");
+            if (!proceed) {
+                statusDiv.innerText = "Refresh cancelled.";
+                return;
+            }
+        }
+
+        currentFetchMode = 'full';
+        setFetchUiState(true);
+        void saveSyncMeta({
+            syncStatus: 'running',
+            lastSyncMode: 'full',
+            lastError: null
+        });
+
+        statusDiv.innerText = "Refreshing full library...";
+        console.log('[Downloader] Starting full refresh...');
         try {
             api.runtime.sendMessage({
                 action: "fetch_songs",
@@ -461,6 +639,53 @@
         } catch (e) {
             console.debug('[Downloader] Could not send fetch request:', e.message);
             statusDiv.innerText = "Fetching songs in background...";
+            currentFetchMode = 'idle';
+            setFetchUiState(false);
+        }
+    }
+
+    function startIncrementalSync(options = {}) {
+        const { automatic = false } = options;
+
+        if (currentFetchMode !== 'idle') {
+            return;
+        }
+
+        if (!allSongs.length) {
+            startFullRefresh({ confirmUser: !automatic });
+            return;
+        }
+
+        currentFetchMode = 'incremental';
+        setFetchUiState(true);
+        void saveSyncMeta({
+            syncStatus: 'running',
+            lastSyncMode: 'incremental',
+            lastError: null
+        });
+
+        statusDiv.innerText = automatic ? "Checking for new songs..." : "Syncing new songs...";
+
+        try {
+            api.runtime.sendMessage({
+                action: "fetch_songs",
+                isPublicOnly: false,
+                maxPages: 0,
+                checkNewOnly: true,
+                knownIds: allSongs.map(song => song.id)
+            }, (response) => {
+                if (chrome.runtime.lastError) {
+                    console.debug('[Downloader] Check for new songs error:', chrome.runtime.lastError);
+                } else if (response && response.error) {
+                    console.log('[Downloader] Check for new songs error:', response.error);
+                } else {
+                    console.log('[Downloader] Check for new songs request sent');
+                }
+            });
+        } catch (e) {
+            console.debug('[Downloader] Could not check for new songs:', e.message);
+            currentFetchMode = 'idle';
+            setFetchUiState(false);
         }
     }
 
@@ -480,15 +705,21 @@
         try {
             console.log('[Downloader] Loading songs from IndexedDB...');
             // Load songs and cached audio IDs from IndexedDB in parallel
-            const [savedSongs, savedFormat, savedSongsMeta, cachedIds] = await Promise.all([
+            const [savedSongs, savedFormat, savedSongsMeta, cachedIds, savedSyncMeta] = await Promise.all([
                 loadSongsFromIDB(),
                 loadPreferenceFromIDB('sunoFormat'),
                 loadPreferenceFromIDB('sunoSongsList'),
-                getAllCachedSongIdsFromIDB()
+                getAllCachedSongIdsFromIDB(),
+                loadPreferenceFromIDB(SYNC_META_KEY)
             ]);
 
             cachedSongIds = new Set(cachedIds);
+            syncMeta = {
+                ...createDefaultSyncMeta(),
+                ...(savedSyncMeta || {})
+            };
             console.log('[Downloader] Loaded', savedSongs?.length || 0, 'songs,', cachedSongIds.size, 'cached audio blobs from IndexedDB');
+            void refreshDbUsageDisplay();
 
             // Load saved format preference first
             if (savedFormat) {
@@ -525,6 +756,8 @@
             console.error('[Downloader] Error loading from storage:', e);
         }
 
+        void refreshDbUsageDisplay();
+
         console.log('[Downloader] No cached songs found, will prompt before auto-fetch...');
         // No cached songs — ask user before starting a full fetch
         songListContainer.style.display = "block";
@@ -532,31 +765,7 @@
     }
 
     function checkForNewSongs() {
-        const isPublicOnly = false; // filterPublic not available here
-        const maxPages = 0;
-        const knownIds = allSongs.map(s => s.id);
-
-        console.log('[Downloader] Checking for new songs. Currently have', allSongs.length, 'songs cached.');
-        
-        try {
-            api.runtime.sendMessage({
-                action: "fetch_songs",
-                isPublicOnly: isPublicOnly,
-                maxPages: maxPages,
-                checkNewOnly: true,
-                knownIds: knownIds
-            }, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.debug('[Downloader] Check for new songs error:', chrome.runtime.lastError);
-                } else if (response && response.error) {
-                    console.log('[Downloader] Check for new songs error:', response.error);
-                } else {
-                    console.log('[Downloader] Check for new songs request sent');
-                }
-            });
-        } catch (e) {
-            console.debug('[Downloader] Could not check for new songs:', e.message);
-        }
+        startIncrementalSync({ automatic: true });
     }
 
     async function saveToStorage() {
@@ -572,6 +781,7 @@
             };
             await savePreferenceToIDB('sunoSongsList', metadata);
             await savePreferenceToIDB('sunoFormat', getSelectedFormat());
+            void refreshDbUsageDisplay();
         } catch (e) {
             console.error('Failed to save to storage:', e);
         }
@@ -582,6 +792,7 @@
             await savePreferenceToIDB('sunoFilterLiked', filterLiked.checked);
             await savePreferenceToIDB('sunoFilterStems', filterStems.checked);
             await savePreferenceToIDB('sunoFilterPublic', filterPublic.checked);
+            await savePreferenceToIDB('sunoFilterOffline', !!filterOffline?.checked);
         } catch (e) {
             console.error('Failed to save filter preferences:', e);
         }
@@ -592,13 +803,20 @@
             const liked = await loadPreferenceFromIDB('sunoFilterLiked');
             const stems = await loadPreferenceFromIDB('sunoFilterStems');
             const pub = await loadPreferenceFromIDB('sunoFilterPublic');
+            const offline = await loadPreferenceFromIDB('sunoFilterOffline');
             
             if (liked !== null) filterLiked.checked = liked;
             if (stems !== null) filterStems.checked = stems;
             filterPublic.checked = (pub !== null) ? pub : true;
+            if (filterOffline) {
+                filterOffline.checked = offline === true;
+            }
         } catch (e) {
             console.error('Failed to load filter preferences:', e);
             filterPublic.checked = true;
+            if (filterOffline) {
+                filterOffline.checked = false;
+            }
         }
     }
 
@@ -625,14 +843,12 @@
 
     async function cacheAllSongs() {
         if (allSongs.length === 0) {
-            setDbDownloadProgress(false);
             statusDiv.innerText = "No songs to cache. Fetch your song list first.";
             return;
         }
 
         const selectedIds = getSelectedSongIds();
         if (selectedIds.length === 0) {
-            setDbDownloadProgress(false);
             statusDiv.innerText = "No songs selected!";
             return;
         }
@@ -640,7 +856,6 @@
         const selectedSongs = allSongs.filter(s => selectedIds.includes(s.id));
         const songsToCache = selectedSongs.filter(s => s.audio_url && !cachedSongIds.has(s.id));
         if (songsToCache.length === 0) {
-            setDbDownloadProgress(false);
             statusDiv.innerText = `All ${selectedSongs.length} selected song(s) are already in the browser database.`;
             return;
         }
@@ -652,11 +867,9 @@
         let cached = 0;
         let failed = 0;
         const total = songsToCache.length;
-        setDbDownloadProgress(true, 0, total);
 
         for (const song of songsToCache) {
             if (stopCachingRequested) {
-                setDbDownloadProgress(true, cached + failed, total);
                 statusDiv.innerText = `⏹️ Download to DB stopped. ${cached} song(s) saved.`;
                 break;
             }
@@ -670,11 +883,10 @@
                 await saveAudioBlobToIDB(song.id, blob);
                 cachedSongIds.add(song.id);
                 cached++;
+                void refreshDbUsageDisplay();
             } catch (e) {
                 failed++;
                 console.error(`[Downloader] Failed to cache "${song.title}":`, e);
-            } finally {
-                setDbDownloadProgress(true, cached + failed, total);
             }
         }
 
@@ -683,7 +895,6 @@
 
         if (!stopCachingRequested) {
             const totalCached = cachedSongIds.size;
-            setDbDownloadProgress(true, total, total);
             statusDiv.innerText = `✅ Download to DB complete! ${cached} new, ${totalCached} total in browser database. ${failed > 0 ? `${failed} failed.` : ''}`.trim();
         }
 
@@ -691,6 +902,7 @@
             preserveScroll: true,
             minimumRenderCount: Math.max(renderedSongCount, SONG_RENDER_BATCH_SIZE)
         });
+        void refreshDbUsageDisplay();
     }
 
     async function deleteSelectedCachedSongs() {
@@ -725,6 +937,7 @@
                     await deleteAudioBlobFromIDB(songId);
                     cachedSongIds.delete(songId);
                     deleted++;
+                    void refreshDbUsageDisplay();
                 } catch (e) {
                     failed++;
                 }
@@ -762,6 +975,27 @@
     filterPublic.addEventListener("change", () => {
         applyFilter();
         saveFilterPreferences();
+    });
+
+    if (filterOffline) {
+        filterOffline.addEventListener("change", () => {
+            applyFilter();
+            saveFilterPreferences();
+        });
+    }
+
+    if (syncNewBtn) {
+        syncNewBtn.addEventListener("click", () => {
+            startIncrementalSync({ automatic: false });
+        });
+    }
+
+    document.addEventListener('bettersuno:refresh-library', () => {
+        startFullRefresh({ confirmUser: true });
+    });
+
+    document.addEventListener('bettersuno:settings-opened', () => {
+        void refreshDbUsageDisplay();
     });
 
     // Select/Clear all toggle button
@@ -858,7 +1092,7 @@
         if (message.action === "fetch_started") {
             // background informs us fetching has started (manual or auto)
             setFetchUiState(true);
-            statusDiv.innerText = "Fetching songs...";
+            statusDiv.innerText = currentFetchMode === 'incremental' ? "Syncing new songs..." : "Fetching songs...";
         }
         if (message.action === "songs_page_update") {
             // start or continue fetching, ensure UI shows stop button
@@ -870,7 +1104,7 @@
 
             if (wasCheckingNew) {
                 // Merge with existing songs
-                const addedCount = mergeSongs(newSongs);
+                mergeSongs(newSongs);
                 statusDiv.innerText = `Page ${message.pageNum}: ${message.totalSongs} new songs found...`;
             } else {
                 // Fresh fetch - replace all
@@ -908,10 +1142,20 @@
             setFetchUiState(false);
             const newSongs = message.songs || [];
             const wasCheckingNew = message.checkNewOnly && allSongs.length > 0;
+            const completedAt = Date.now();
 
             if (wasCheckingNew) {
                 // Merge with existing songs
                 const addedCount = mergeSongs(newSongs);
+                void saveSyncMeta({
+                    lastSyncAt: completedAt,
+                    lastIncrementalSyncAt: completedAt,
+                    lastSyncMode: 'incremental',
+                    lastAddedCount: addedCount,
+                    totalSongsAtLastSync: allSongs.length,
+                    lastError: null,
+                    syncStatus: 'complete'
+                });
                 if (addedCount > 0) {
                     statusDiv.innerText = `Found ${addedCount} new song(s). Total: ${allSongs.length}`;
                 } else {
@@ -937,16 +1181,37 @@
                     });
                 }
                 saveToStorage();
+                void saveSyncMeta({
+                    lastSyncAt: completedAt,
+                    lastFullSyncAt: completedAt,
+                    lastSyncMode: 'full',
+                    lastAddedCount: allSongs.length,
+                    totalSongsAtLastSync: allSongs.length,
+                    lastError: null,
+                    syncStatus: 'complete'
+                });
                 statusDiv.innerText = `✅ Complete! Found ${allSongs.length} songs total.`;
             }
+            currentFetchMode = 'idle';
         }
         if (message.action === "fetch_stopped") {
             setFetchUiState(false);
+            void saveSyncMeta({
+                syncStatus: 'stopped',
+                lastSyncMode: currentFetchMode === 'idle' ? syncMeta.lastSyncMode : currentFetchMode
+            });
             statusDiv.innerText = "⏹️ Fetch stopped by user – song list may be incomplete.";
+            currentFetchMode = 'idle';
         }
         if (message.action === "fetch_error") {
             setFetchUiState(false);
+            void saveSyncMeta({
+                syncStatus: 'error',
+                lastError: message.error || 'Unknown error',
+                lastSyncMode: currentFetchMode === 'idle' ? syncMeta.lastSyncMode : currentFetchMode
+            });
             statusDiv.innerText = message.error;
+            currentFetchMode = 'idle';
         }
 
         if (message.action === "download_complete") {
@@ -1181,6 +1446,7 @@
         const showLikedOnly = filterLiked.checked;
         const showStemsOnly = filterStems.checked;
         const showPublicOnly = filterPublic.checked;
+        const showOfflineOnly = !!filterOffline?.checked;
 
         filteredSongs = allSongs.filter(song => {
             // Text filter
@@ -1200,6 +1466,10 @@
 
             // Public filter
             if (showPublicOnly && !song.is_public) {
+                return false;
+            }
+
+            if (showOfflineOnly && !cachedSongIds.has(song.id)) {
                 return false;
             }
 
@@ -1226,7 +1496,13 @@
         if (!sortedFilteredSongs.length) {
             const emptyDiv = document.createElement('div');
             emptyDiv.className = 'bettersuno-empty';
-            emptyDiv.textContent = allSongs.length > 0 ? 'No songs match the current filters' : 'No songs loaded yet';
+            if (filterOffline?.checked) {
+                emptyDiv.textContent = cachedSongIds.size > 0
+                    ? 'No offline songs match the current filters'
+                    : 'No offline songs cached yet. Select songs and use Download to DB.';
+            } else {
+                emptyDiv.textContent = allSongs.length > 0 ? 'No songs match the current filters' : 'No songs loaded yet';
+            }
             songList.appendChild(emptyDiv);
             updateSelectedCount();
             return;

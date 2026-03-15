@@ -73,6 +73,9 @@
               <label class="checkbox-label" style="margin: 0; padding: 0">
                 <input type="checkbox" id="filterPublic" checked /> 🌐 Public
               </label>
+              <label class="checkbox-label" style="margin: 0; padding: 0">
+                <input type="checkbox" id="filterOffline" /> 💾 Offline Only
+              </label>
             </div>
 
             <input type="text" id="filterInput" placeholder="🔍 Search songs by title..." />
@@ -82,6 +85,7 @@
               <button id="cacheAllBtn" class="btn-secondary" title="Download selected songs as MP3 into the browser database for offline playback">Download to DB</button>
               <button id="stopCacheBtn" class="btn-stop hidden">Stop</button>
               <button id="deleteCachedBtn" class="btn-danger" title="Delete the selected songs from the browser database">Delete from DB</button>
+              <button id="syncNewBtn" class="btn-secondary" title="Fetch only songs that are newer than your current local library">Sync New</button>
               <span id="songCount">0 songs</span>
             </span>
 
@@ -90,15 +94,6 @@
             <div class="btn-row btn-row-actions">
               <button id="downloadBtn" class="btn-primary">Download</button>
               <button id="stopDownloadBtn" class="btn-stop hidden">Stop</button>
-            </div>
-            <div id="dbDownloadProgress" class="db-download-progress hidden" aria-live="polite">
-              <div class="db-download-progress-label">
-                <span id="dbDownloadProgressText">0 / 0</span>
-                <span id="dbDownloadProgressPercent">0%</span>
-              </div>
-              <div class="db-download-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                <div id="dbDownloadProgressBar" class="db-download-progress-fill"></div>
-              </div>
             </div>
           </div>
 
@@ -143,8 +138,12 @@
             <label>Download Folder:</label>
             <input type="text" id="folder" class="bettersuno-setting" data-key="downloadFolder" value="Suno_Songs" placeholder="Folder name in Downloads" style="flex: 1;" />
           </div>
+          <div class="bettersuno-setting-row">
+            <label>Local DB Usage:</label>
+            <div id="bettersuno-db-usage" class="bettersuno-setting-value">Calculating...</div>
+          </div>
           <div class="bettersuno-setting-row" style="display: inline-flex; gap: 5px; align-items: flex-start;">
-            <button id="bettersuno-fetch-songs-btn" class="btn-primary" style="padding: 8px 16px; cursor: pointer;">Fetch Songs</button>
+            <button id="bettersuno-fetch-songs-btn" class="btn-primary" style="padding: 8px 16px; cursor: pointer;">Refresh Library</button>
             <button id="bettersuno-stop-fetch-btn" class="btn-stop" style="padding: 8px 16px; cursor: pointer; display: none;">Stop Fetch</button>
           </div>
         </div>
@@ -222,12 +221,13 @@
       } else if (tab === 'library') {
         list.style.display = 'none';
         settingsContent.style.display = 'none';
-        libraryContent.style.display = 'block';
+        libraryContent.style.display = 'flex';
       } else {
         list.style.display = 'none';
         settingsContent.style.display = 'block';
         libraryContent.style.display = 'none';
         loadSettings();
+        document.dispatchEvent(new CustomEvent('bettersuno:settings-opened'));
       }
     });
   });
@@ -279,29 +279,12 @@
   const fetchSongsBtn = root.querySelector('#bettersuno-fetch-songs-btn');
   if (fetchSongsBtn) {
     fetchSongsBtn.addEventListener('click', () => {
-      // confirm with the user before doing a full fetch
-      const ok = confirm("Fetch your entire song library from Suno? This may take a while. Proceed?");
-      if (!ok) {
-        return;
+      const libraryTabButton = root.querySelector('.bettersuno-tab[data-tab="library"]');
+      if (libraryTabButton) {
+        libraryTabButton.click();
       }
 
-      // hide the button immediately to prevent multiple clicks
-      fetchSongsBtn.style.display = 'none';
-      
-      try {
-        chrome.runtime.sendMessage({
-          action: 'fetch_songs',
-          isPublicOnly: false,
-          maxPages: 0
-        });
-      } catch (e) {
-        console.debug('[BetterSuno] Could not send fetch songs command');
-      }
-      
-      // Re-enable button after fetching completes (downloader.js will send a message when done)
-      
-      
-      console.log('[BetterSuno] Fetch songs request sent');
+      document.dispatchEvent(new CustomEvent('bettersuno:refresh-library'));
     });
   }
 

@@ -100,16 +100,15 @@
 /* ---- Panel ---- */
 #bettersuno-panel {
   display: none !important;
-  position: absolute !important;
-  bottom: 60px !important;
-  right: 0 !important;
-  width: min(520px, calc(100vw - 40px)) !important;
-  height: min(820px, calc(100vh - 96px)) !important;
-  max-height: calc(100vh - 96px) !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
   background: var(--bettersuno-bg) !important;
-  border: 1px solid var(--bettersuno-border) !important;
-  border-radius: 12px !important;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5) !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
   overflow: hidden !important;
   flex-direction: column !important;
   pointer-events: auto !important;
@@ -346,6 +345,7 @@
 .bettersuno-content {
   overflow-y: auto !important;
   flex: 1 !important;
+  min-height: 0 !important;
   pointer-events: auto !important;
 }
 
@@ -417,6 +417,19 @@
   outline: none !important;
   border-color: var(--bettersuno-accent) !important;
   box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2) !important;
+}
+
+.bettersuno-setting-value {
+  min-height: 30px !important;
+  display: flex !important;
+  align-items: center !important;
+  padding: 6px 10px !important;
+  background: var(--bettersuno-bg-hover) !important;
+  border: 1px solid var(--bettersuno-border) !important;
+  border-radius: 4px !important;
+  color: var(--bettersuno-text) !important;
+  font-size: 12px !important;
+  box-sizing: border-box !important;
 }
 
 
@@ -698,36 +711,7 @@
   padding-right: 10px !important;
 }
 
-#bettersuno-panel .db-download-progress {
-  margin-top: 8px !important;
-}
 
-#bettersuno-panel .db-download-progress-label {
-  display: flex !important;
-  justify-content: space-between !important;
-  align-items: center !important;
-  margin-bottom: 6px !important;
-  font-size: 11px !important;
-  color: #d4d4d8 !important;
-}
-
-#bettersuno-panel .db-download-progress-track {
-  width: 100% !important;
-  height: 8px !important;
-  overflow: hidden !important;
-  border-radius: 999px !important;
-  background: #111113 !important;
-  border: 1px solid #3f3f46 !important;
-  box-sizing: border-box !important;
-}
-
-#bettersuno-panel .db-download-progress-fill {
-  width: 0% !important;
-  height: 100% !important;
-  border-radius: inherit !important;
-  background: linear-gradient(90deg, #22c55e 0%, #06b6d4 100%) !important;
-  transition: width 0.18s ease !important;
-}
 
 #bettersuno-panel .hidden {
   display: none !important;
@@ -738,6 +722,10 @@
   background: #18181b !important;
   padding: 12px !important;
   border-radius: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 !important;
+  min-height: 0 !important;
 }
 
 #bettersuno-panel #status {
@@ -790,8 +778,24 @@
   box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
 }
 
+#bettersuno-download-content {
+  flex-direction: column !important;
+  flex: 1 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+#bettersuno-downloader-wrapper {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 !important;
+  min-height: 0 !important;
+}
+
 #bettersuno-panel #songList {
-  max-height: 220px !important;
+  flex: 1 !important;
+  min-height: 0 !important;
+  max-height: none !important;
   overflow-y: auto !important;
   border: 1px solid #3f3f46 !important;
   border-radius: 6px !important;
@@ -943,6 +947,15 @@
   line-height: 1 !important;
 }
 
+#bettersuno-panel #selectControls #syncNewBtn {
+  flex: 0 0 auto !important;
+  padding: 5px 8px !important;
+  font-size: 11px !important;
+  letter-spacing: 0 !important;
+  min-height: 28px !important;
+  line-height: 1 !important;
+}
+
 #bettersuno-panel #filterControls {
   display: flex !important;
   gap: 8px !important;
@@ -1066,8 +1079,7 @@
 
   #bettersuno-panel #filterInput,
   #bettersuno-panel #selectControls,
-  #bettersuno-panel .btn-row,
-  #bettersuno-panel .db-download-progress {
+  #bettersuno-panel .btn-row {
     margin-bottom: 6px !important;
   }
 
