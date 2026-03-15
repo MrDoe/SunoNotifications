@@ -998,6 +998,21 @@
         void refreshDbUsageDisplay();
     });
 
+    document.addEventListener('bettersuno:delete-library', async () => {
+        try {
+            await clearStorage();
+            allSongs = [];
+            selectedSongIds.clear();
+            cachedSongIds.clear();
+            renderSongList({ preserveScroll: false });
+            statusDiv.innerText = "✅ Library deleted successfully.";
+            void refreshDbUsageDisplay();
+        } catch (e) {
+            console.error('[Downloader] Failed to delete library:', e);
+            statusDiv.innerText = "❌ Failed to delete library.";
+        }
+    });
+
     // Select/Clear all toggle button
     selectAllButton.addEventListener("click", () => {
         const shouldSelectAll = selectAllButton.getAttribute('aria-pressed') !== 'true';

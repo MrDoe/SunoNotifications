@@ -145,6 +145,7 @@
           <div class="bettersuno-setting-row" style="display: inline-flex; gap: 5px; align-items: flex-start;">
             <button id="bettersuno-fetch-songs-btn" class="btn-primary" style="padding: 8px 16px; cursor: pointer;">Refresh Library</button>
             <button id="bettersuno-stop-fetch-btn" class="btn-stop" style="padding: 8px 16px; cursor: pointer; display: none;">Stop Fetch</button>
+            <button id="bettersuno-delete-library-btn" class="btn-danger" style="padding: 8px 16px; cursor: pointer;">Delete Library</button>
           </div>
         </div>
       </div>
@@ -303,6 +304,16 @@
         console.debug('[BetterSuno] Could not send stop fetch command');
       }
       console.log('[BetterSuno] Stop fetch request sent');
+    });
+  }
+
+  // ---- Delete Library button ----
+  const deleteLibraryBtn = root.querySelector('#bettersuno-delete-library-btn');
+  if (deleteLibraryBtn) {
+    deleteLibraryBtn.addEventListener('click', () => {
+      const confirm_delete = confirm("Delete the entire song library from local storage? This cannot be undone.");
+      if (!confirm_delete) return;
+      document.dispatchEvent(new CustomEvent('bettersuno:delete-library'));
     });
   }
 
