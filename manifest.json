@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BetterSuno",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Enhanced Suno.com experience with notifications and song downloads",
 
   "browser_specific_settings": {
@@ -25,7 +25,6 @@
     "scripting",
     "tabs",
     "offscreen",
-    "storage", 
     "notifications",
     "downloads"
   ],
