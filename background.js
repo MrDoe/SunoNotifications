@@ -1429,6 +1429,45 @@ function findUuidLikeId(obj) {
   return null;
 }
 
+// Fallback download for platforms without chrome.downloads (e.g. Firefox Android).
+// Fetches the resource in the background service worker (avoids CORS), converts to a
+// base64 data-URL, then injects a one-shot anchor-click into the active Suno tab.
+async function downloadViaInject(url, filename) {
+  const tab = await getSunoTab();
+  if (!tab?.id) throw new Error('No Suno tab found for in-page download.');
+
+  let dataUrl = url;
+  if (!url.startsWith('data:')) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Fetch failed: HTTP ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    const view = new Uint8Array(buffer);
+    // btoa() is available in service workers; process in chunks to avoid stack overflow
+    let binary = '';
+    const chunkSize = 8192;
+    for (let i = 0; i < view.length; i += chunkSize) {
+      binary += String.fromCharCode(...view.subarray(i, Math.min(i + chunkSize, view.length)));
+    }
+    const mimeType = response.headers.get('content-type') || 'application/octet-stream';
+    dataUrl = `data:${mimeType};base64,${btoa(binary)}`;
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: (dUrl, fname) => {
+      const a = document.createElement('a');
+      a.href = dUrl;
+      a.download = fname;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    },
+    args: [dataUrl, filename]
+  });
+
+  return true;
+}
+
 async function downloadSelectedSongs(folderName, songs, format = 'mp3', jobId = 0, downloadOptions = { music: true, lyrics: true, image: true }) {
   const cleanFolder = folderName.replace(/[^a-zA-Z0-9_-]/g, "");
 
@@ -1467,7 +1506,8 @@ async function downloadSelectedSongs(folderName, songs, format = 'mp3', jobId = 
 
   async function downloadOneFile(url, filename) {
     if (!chrome.downloads?.download) {
-      throw new Error('Downloads API is unavailable in this browser.');
+      // Firefox Android doesn't support the downloads API; fall back to in-page download.
+      return await downloadViaInject(url, filename);
     }
 
     let downloadId;

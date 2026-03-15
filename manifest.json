@@ -32,8 +32,8 @@
   
   "host_permissions": [
     "https://suno.com/*",
-    "https://clerk.suno.com/*",
-    "https://api.suno.com/*",
+    "https://*.suno.com/*",
+    "https://*.suno.ai/*",
     "https://studio-api.prod.suno.com/*"
   ],
   

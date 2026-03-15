@@ -18,6 +18,7 @@
     let renderedSongCount = 0;
     let songListSentinel = null;
     let songListObserver = null;
+    const songItemCache = new Map(); // songId → DOM element; reused on re-renders to prevent image reload
     const SYNC_META_KEY = 'sunoSyncMeta';
     let currentFetchMode = 'idle';
     let syncMeta = createDefaultSyncMeta();
@@ -128,7 +129,7 @@
     // ========================================================================
     
     const IDB_NAME = 'BetterSunoicationsDB';
-    const IDB_VERSION = 2;
+    const IDB_VERSION = 3;
     let dbInstance = null;
     const textEncoder = new TextEncoder();
 
@@ -154,6 +155,9 @@
                 }
                 if (!db.objectStoreNames.contains('audioCache')) {
                     db.createObjectStore('audioCache', { keyPath: 'songId' });
+                }
+                if (!db.objectStoreNames.contains('imageCache')) {
+                    db.createObjectStore('imageCache', { keyPath: 'songId' });
                 }
             };
         });
@@ -316,6 +320,51 @@
         }
     }
 
+    async function saveImageBlobToIDB(songId, blob) {
+        try {
+            const db = await getDB();
+            const tx = db.transaction('imageCache', 'readwrite');
+            const store = tx.objectStore('imageCache');
+            store.put({ songId, blob, timestamp: Date.now() });
+            return new Promise((resolve, reject) => {
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        } catch (e) {
+            console.error('[IDB] Failed to save image blob:', e);
+        }
+    }
+
+    async function getImageBlobFromIDB(songId) {
+        try {
+            const db = await getDB();
+            const tx = db.transaction('imageCache', 'readonly');
+            const store = tx.objectStore('imageCache');
+            const request = store.get(songId);
+            return new Promise((resolve, reject) => {
+                request.onsuccess = () => resolve(request.result?.blob || null);
+                request.onerror = () => reject(request.error);
+            });
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function deleteImageBlobFromIDB(songId) {
+        try {
+            const db = await getDB();
+            const tx = db.transaction('imageCache', 'readwrite');
+            const store = tx.objectStore('imageCache');
+            store.delete(songId);
+            return new Promise((resolve, reject) => {
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        } catch (e) {
+            // ignore
+        }
+    }
+
     async function getAllRecordsFromStore(storeName) {
         try {
             const db = await getDB();
@@ -406,13 +455,14 @@
     }
 
     async function estimateDbUsageBytes() {
-        const [songs, preferences, audioCache] = await Promise.all([
+        const [songs, preferences, audioCache, imageCache] = await Promise.all([
             getAllRecordsFromStore('songsList'),
             getAllRecordsFromStore('userPreferences'),
-            getAllRecordsFromStore('audioCache')
+            getAllRecordsFromStore('audioCache'),
+            getAllRecordsFromStore('imageCache')
         ]);
 
-        return estimateValueSize(songs) + estimateValueSize(preferences) + estimateValueSize(audioCache);
+        return estimateValueSize(songs) + estimateValueSize(preferences) + estimateValueSize(audioCache) + estimateValueSize(imageCache);
     }
 
     // ========================================================================
@@ -881,7 +931,24 @@
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const blob = await response.blob();
                 await saveAudioBlobToIDB(song.id, blob);
+
+                // Also cache a small thumbnail (64px wide via CDN query param)
+                const rawImageUrl = song.image_url || song.thumbnail_url || song.cover_image_url || song.artwork_url || null;
+                if (rawImageUrl) {
+                    try {
+                        const thumbUrl = rawImageUrl.split('?')[0] + '?width=64';
+                        const imgResponse = await fetch(thumbUrl);
+                        if (imgResponse.ok) {
+                            const imgBlob = await imgResponse.blob();
+                            await saveImageBlobToIDB(song.id, imgBlob);
+                        }
+                    } catch (imgErr) {
+                        // thumbnail failure is non-fatal
+                    }
+                }
+
                 cachedSongIds.add(song.id);
+                songItemCache.delete(song.id); // force re-creation so cached thumbnail is shown
                 cached++;
                 void refreshDbUsageDisplay();
             } catch (e) {
@@ -935,7 +1002,9 @@
             for (const songId of cachedSelectedIds) {
                 try {
                     await deleteAudioBlobFromIDB(songId);
+                    await deleteImageBlobFromIDB(songId);
                     cachedSongIds.delete(songId);
+                    songItemCache.delete(songId); // force re-creation without cached state
                     deleted++;
                     void refreshDbUsageDisplay();
                 } catch (e) {
@@ -1001,9 +1070,21 @@
     document.addEventListener('bettersuno:delete-library', async () => {
         try {
             await clearStorage();
+            // Also wipe the audio and image caches
+            try {
+                const db = await getDB();
+                await new Promise((res, rej) => {
+                    const tx = db.transaction(['audioCache', 'imageCache'], 'readwrite');
+                    tx.objectStore('audioCache').clear();
+                    tx.objectStore('imageCache').clear();
+                    tx.oncomplete = res;
+                    tx.onerror = () => rej(tx.error);
+                });
+            } catch (e) { /* non-fatal */ }
             allSongs = [];
             selectedSongIds.clear();
             cachedSongIds.clear();
+            songItemCache.clear();
             renderSongList({ preserveScroll: false });
             statusDiv.innerText = "✅ Library deleted successfully.";
             void refreshDbUsageDisplay();
@@ -1311,10 +1392,11 @@
 
         const thumbnail = document.createElement("div");
         thumbnail.className = "song-thumbnail";
-        if (thumbnailUrl) {
+
+        function attachThumbnailImage(src) {
             const thumbnailImage = document.createElement("img");
             thumbnailImage.className = "song-thumbnail-image";
-            thumbnailImage.src = thumbnailUrl;
+            thumbnailImage.src = src;
             thumbnailImage.alt = song.title ? `${song.title} cover art` : 'Song cover art';
             thumbnailImage.loading = 'lazy';
             thumbnailImage.decoding = 'async';
@@ -1326,6 +1408,25 @@
                 }
             }, { once: true });
             thumbnail.appendChild(thumbnailImage);
+        }
+
+        if (cachedSongIds.has(song.id)) {
+            // Try to load from the local imageCache first; fall back to CDN URL
+            getImageBlobFromIDB(song.id).then(imgBlob => {
+                if (imgBlob) {
+                    const objUrl = URL.createObjectURL(imgBlob);
+                    attachThumbnailImage(objUrl);
+                    // Revoke the object URL once the image has loaded to free memory
+                    thumbnail.querySelector('img')?.addEventListener('load', () => URL.revokeObjectURL(objUrl), { once: true });
+                } else if (thumbnailUrl) {
+                    attachThumbnailImage(thumbnailUrl);
+                } else {
+                    thumbnail.classList.add('is-fallback');
+                    thumbnail.textContent = '♪';
+                }
+            });
+        } else if (thumbnailUrl) {
+            attachThumbnailImage(thumbnailUrl);
         } else {
             thumbnail.classList.add('is-fallback');
             thumbnail.textContent = '♪';
@@ -1428,7 +1529,13 @@
 
         const fragment = document.createDocumentFragment();
         for (let index = start; index < end; index++) {
-            fragment.appendChild(createSongListItem(sortedFilteredSongs[index]));
+            const song = sortedFilteredSongs[index];
+            let item = songItemCache.get(song.id);
+            if (!item) {
+                item = createSongListItem(song);
+                songItemCache.set(song.id, item);
+            }
+            fragment.appendChild(item);
         }
 
         songList.insertBefore(fragment, songListSentinel);
